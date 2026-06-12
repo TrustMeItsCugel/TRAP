@@ -1,0 +1,28 @@
+[package]
+name = "trap-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "TRAP: Trustless Random Agreement Protocol — reference implementation"
+
+[features]
+default = ["std"]
+std = ["timelock/std", "sha2/std"]
+# Live drand HTTP client (pulls in ureq)
+live = ["dep:ureq"]
+
+[dependencies]
+timelock.workspace = true
+sha2.workspace = true
+ed25519-dalek.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+indexmap.workspace = true
+rand.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+ark-serialize.workspace = true
+ureq = { version = "2", optional = true, features = ["json"] }
+
+[dev-dependencies]
+hex.workspace = true

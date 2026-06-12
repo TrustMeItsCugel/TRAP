@@ -1,0 +1,13 @@
+[package]
+name = "trap-demo"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+trap-core = { path = "../trap-core" }
+serde_json.workspace = true
+hex.workspace = true
+
+[features]
+live = ["trap-core/live"]
