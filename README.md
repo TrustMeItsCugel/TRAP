@@ -1,4 +1,4 @@
-# TRAP — Trustless Random Agreement Protocol
+# TRAP — Trustless Randomness Agreement Protocol
 
 A reference implementation of bilateral commit-reveal with timelock
 enforcement: two mutually distrusting parties agree on a random value, and
