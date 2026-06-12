@@ -1,7 +1,5 @@
 # TRAP — Trustless Randomness Agreement Protocol
 
-"Drop rate: *Legendary* 0.5%." Says who?
-
 Every loot box, gacha pull and loot roll runs on randomness you have to
 take on faith. The standing excuse is that provable fairness is
 impractical without a blockchain. TRAP is a working demonstration that it
