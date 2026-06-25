@@ -98,8 +98,10 @@ client-ghosting variants, fully offline.
 
 ## Properties
 
-- **No information advantage.** Both parties commit before either reveals.
-The client commits *blind*, before seeing what it might win.
+- **No information to discriminate on.** Both parties commit before either
+reveals; the client commits *blind*, before the outcome-determining contents
+and nonce exist for it. Neither side can pick a favourable result, and after
+committing neither holds an outcome advantage.
 - **Ghosting doesn't work.** Commitments are timelock-encrypted to a drand
 round chosen at session start. Going silent only delays the outcome.
 - **Cheating is binary and provable.** A commitment either matches its

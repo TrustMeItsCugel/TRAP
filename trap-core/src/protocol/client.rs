@@ -52,8 +52,7 @@ pub struct ClientSession {
 /// Freshness check for the server-chosen timelock round, supplied to
 /// [`ClientSession::accept`]. A production client MUST validate the round
 /// before committing (Spec §7.1) — a server that names an already-elapsed or
-/// out-of-policy round would otherwise undermine the timelock; supplying a
-/// `RoundCheck` here is the built-in way to satisfy that requirement.
+/// out-of-policy round would otherwise undermine the timelock.
 pub struct RoundCheck<'a> {
     pub chain: &'a ChainInfo,
     /// Current time, unix seconds.
@@ -66,17 +65,42 @@ impl ClientSession {
     ///
     /// The client commits *blind* — the contents are not yet revealed.
     ///
-    /// When `round_check` is `Some`, the server-chosen `drand_round` is
-    /// validated against the policy and rejected if unacceptable (Spec §7.1).
-    /// Passing `None` skips the check — acceptable only when the round is
-    /// validated out of band or in fixed-round test/replay scenarios.
+    /// The server-chosen `drand_round` is validated against `round_check`
+    /// (Spec §7.1) and the session is rejected if the round is already
+    /// elapsed or out of policy. This is mandatory because the timelock only
+    /// protects the client's secret while the round's beacon does not yet
+    /// exist; skipping it forfeits that guarantee. The bypass —
+    /// [`ClientSession::accept_unchecked`] — exists only for fixed-round test
+    /// and replay scenarios and is named loudly on purpose.
     pub fn accept(
+        identity: &Identity,
+        msg: ServerCommitment,
+        beacon_public_key: &[u8],
+        round_check: &RoundCheck,
+    ) -> Result<(Self, ClientCommitment), ProtocolError> {
+        Self::accept_impl(identity, msg, beacon_public_key, Some(round_check))
+    }
+
+    /// Like [`ClientSession::accept`] but **without** the round-freshness
+    /// check. Use ONLY when the `drand_round` is validated out of band, or in
+    /// fixed-round test/replay flows. In production this re-opens the
+    /// stall-then-decrypt window the round check closes — prefer `accept`.
+    pub fn accept_unchecked(
+        identity: &Identity,
+        msg: ServerCommitment,
+        beacon_public_key: &[u8],
+    ) -> Result<(Self, ClientCommitment), ProtocolError> {
+        Self::accept_impl(identity, msg, beacon_public_key, None)
+    }
+
+    fn accept_impl(
         identity: &Identity,
         msg: ServerCommitment,
         beacon_public_key: &[u8],
         round_check: Option<&RoundCheck>,
     ) -> Result<(Self, ClientCommitment), ProtocolError> {
-        // Verify the server's Step 0 signature.
+        // Verify the server's Step 0 signature before trusting any of its
+        // fields (the round we are about to check among them).
         let buf = fields::server_commitment_fields_of(&msg);
         verify_field_signature(&msg.signature, &buf.as_fields(), &[], None)?;
 
