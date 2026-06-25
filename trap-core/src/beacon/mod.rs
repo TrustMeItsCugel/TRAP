@@ -101,14 +101,18 @@ pub fn target_round(chain: &ChainInfo, duration_seconds: u64) -> u64 {
     current_round(chain) + rounds
 }
 
-/// Acceptable bounds, in rounds, for a server-chosen timelock horizon
-/// (Spec §7.1). Defaults: minimum ~30 s, maximum ~2 months at 3 s/round.
+/// Acceptable bounds, expressed **in rounds**, for a server-chosen timelock
+/// horizon (Spec §7.1). The wall-clock meaning of a given lead depends on the
+/// chain's `period`; the approximate durations below assume Quicknet's
+/// 3-second period (`ChainInfo::quicknet().period`). For a different chain,
+/// scale by its period, or set the lead bounds from your own duration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RoundPolicy {
-    /// Minimum rounds the target must be in the future (default 10 ≈ 30 s).
+    /// Minimum rounds the target must be in the future
+    /// (default 10 ≈ 30 s on Quicknet).
     pub min_lead: u64,
     /// Maximum rounds the target may be in the future
-    /// (default 1_728_000 ≈ 2 months).
+    /// (default 1_728_000 ≈ 2 months on Quicknet).
     pub max_lead: u64,
 }
 

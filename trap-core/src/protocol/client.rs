@@ -49,10 +49,11 @@ pub struct ClientSession {
     state: State,
 }
 
-/// Optional freshness check for the server-chosen timelock round, supplied
-/// to [`ClientSession::accept`]. Production clients SHOULD always provide
-/// one: it rejects a server that names an already-elapsed or out-of-policy
-/// round, which would otherwise undermine the timelock (Spec §7.1).
+/// Freshness check for the server-chosen timelock round, supplied to
+/// [`ClientSession::accept`]. A production client MUST validate the round
+/// before committing (Spec §7.1) — a server that names an already-elapsed or
+/// out-of-policy round would otherwise undermine the timelock; supplying a
+/// `RoundCheck` here is the built-in way to satisfy that requirement.
 pub struct RoundCheck<'a> {
     pub chain: &'a ChainInfo,
     /// Current time, unix seconds.

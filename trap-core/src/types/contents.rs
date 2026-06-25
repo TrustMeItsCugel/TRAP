@@ -96,9 +96,10 @@ pub enum ContentsError {
 }
 
 /// Whether an inclusive `[min, max]` range's span (`max - min + 1`) fits in
-/// a `u64`. Only a near-full-width `i64` range fails. `outcome::pick_range`
-/// reduces the derived randomness modulo this span, so a span that wrapped
-/// to zero would panic — `validate` rejects such ranges up front.
+/// a `u64`. The only range that fails is the full-width `i64::MIN..=i64::MAX`
+/// (span exactly 2^64). `outcome::pick_range` reduces the derived randomness
+/// modulo this span, so a span that wrapped to zero would panic — `validate`
+/// rejects it up front.
 fn range_span_fits_u64(min: i64, max: i64) -> bool {
     (max as i128 - min as i128 + 1) <= u64::MAX as i128
 }
@@ -230,8 +231,8 @@ mod tests {
 
     #[test]
     fn full_width_range_rejected() {
-        // A near-full-width range would overflow the u64 span used by
-        // pick_range; validate must reject it rather than letting it panic.
+        // The full-width i64 range overflows the u64 span used by pick_range;
+        // validate must reject it rather than letting it panic.
         let c = Contents {
             operations: vec![Operation {
                 id: "r".into(),
