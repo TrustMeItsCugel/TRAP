@@ -246,7 +246,7 @@ fn main() {
     // Live Step 2: the server discloses contents and nonce...
     let (_server, step2) = server.receive_client_commitment(&server_id, step1).unwrap();
     let (client, _step3) = client.receive_contents(&client_id, step2).unwrap();
-    println!("  (server never sends Step 4 — client resolves its escrowed secret)");
+    println!("  (server never sends Step 4 — client resolves the server's escrowed secret)");
     let beacon = (env.beacon_fetch)();
     let (client, outcome) = client.resolve_with_beacon(&beacon).unwrap();
     println!("  outcome: {}", serde_json::to_string(&outcome).unwrap());
