@@ -5,9 +5,7 @@
 //! empty context, matching drand's tlock construction.
 
 use super::CryptoError;
-use crate::types::contents::Contents;
 use ark_serialize::CanonicalDeserialize;
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use timelock::{
     block_ciphers::AESGCMBlockCipherProvider,
@@ -16,14 +14,11 @@ use timelock::{
     tlock::{tld, tle},
 };
 
-/// The server's timelock payload: secret and contents bundled so the
-/// proof document is fully self-resolving (Spec §3, Appendix B).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ServerTimelockPayload {
-    #[serde(with = "crate::types::hex32")]
-    pub secret: [u8; 32],
-    pub contents: Contents,
-}
+// Both parties' timelock payloads are a single 32-byte secret (see
+// `encrypt_secret`/`decrypt_secret`). The server's `contents` and
+// `server_nonce` are deliberately NOT escrowed here: they are disclosed
+// only at the live contents reveal (Step 2), which is what defeats the
+// stall-then-grind attack (Spec §3, §6.1, Appendix B).
 
 fn quicknet_identity(round: u64) -> TlockIdentity {
     let mut h = Sha256::new();
@@ -97,27 +92,6 @@ pub fn decrypt_secret(
         .map_err(|_| CryptoError::TimelockPayload("expected 32-byte secret".into()))
 }
 
-/// Timelock-encrypt the server bundle {secret, contents} to a drand round.
-pub fn encrypt_server_payload(
-    payload: &ServerTimelockPayload,
-    round: u64,
-    beacon_public_key: &[u8],
-) -> Result<Vec<u8>, CryptoError> {
-    let bytes = serde_json::to_vec(payload)
-        .map_err(|e| CryptoError::TimelockEncrypt(format!("payload serialise: {e}")))?;
-    tle_bytes(&bytes, round, beacon_public_key)
-}
-
-/// Decrypt and parse the server bundle with the round's beacon signature.
-pub fn decrypt_server_payload(
-    ciphertext: &[u8],
-    beacon_signature: &[u8],
-) -> Result<ServerTimelockPayload, CryptoError> {
-    let pt = tld_bytes(ciphertext, beacon_signature)?;
-    serde_json::from_slice(&pt)
-        .map_err(|e| CryptoError::TimelockPayload(format!("payload parse: {e}")))
-}
-
 #[cfg(test)]
 pub(crate) mod test_vectors {
     //! Real, immutable drand Quicknet values usable offline.
@@ -132,26 +106,12 @@ pub(crate) mod test_vectors {
 mod tests {
     use super::test_vectors::*;
     use super::*;
-    use crate::types::contents::{Operation, OperationType};
 
     fn pk() -> Vec<u8> {
         hex::decode(QUICKNET_PK_HEX).unwrap()
     }
     fn sig1000() -> Vec<u8> {
         hex::decode(ROUND_1000_SIG_HEX).unwrap()
-    }
-    fn sample_contents() -> Contents {
-        Contents {
-            operations: vec![Operation {
-                id: "tier".into(),
-                depends_on: None,
-                op: OperationType::Distribution {
-                    outcomes: [("common".to_string(), 9000u64), ("rare".to_string(), 1000)]
-                        .into_iter()
-                        .collect(),
-                },
-            }],
-        }
     }
 
     #[test]
@@ -161,17 +121,6 @@ mod tests {
         assert!(!ct.is_empty());
         let back = decrypt_secret(&ct, &sig1000()).unwrap();
         assert_eq!(back, secret);
-    }
-
-    #[test]
-    fn t1b_t3b_server_payload_round_trip() {
-        let payload = ServerTimelockPayload {
-            secret: [7u8; 32],
-            contents: sample_contents(),
-        };
-        let ct = encrypt_server_payload(&payload, ROUND_1000, &pk()).unwrap();
-        let back = decrypt_server_payload(&ct, &sig1000()).unwrap();
-        assert_eq!(back, payload);
     }
 
     #[test]

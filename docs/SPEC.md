@@ -81,10 +81,11 @@ Step 4: Server → Client    Server Reveal + Outcome
 The server initiates a session and commits to:
 - A server secret (as a SHA-256 hash)
 - The session contents (as a SHA-256 hash)
-- A timelock-encrypted bundle containing both the server secret and the contents (encrypted to a future drand round)
+- A server nonce (as a SHA-256 hash) — live entropy, disclosed only at Step 2
+- A timelock-encrypted copy of the server secret **only** (encrypted to a future drand round)
 - The target drand round number
 
-All fields are signed with the server's Ed25519 key. The inclusion of contents in the timelock payload ensures the proof document is fully self-resolving — if the server becomes unresponsive, the client can recover everything needed to compute the outcome when the timelock expires.
+All fields are signed with the server's Ed25519 key. The contents and the nonce are deliberately **not** placed under timelock: they are withheld until the live Step 2 reveal. This is what defeats the stall-then-grind attack (§6.1) — a client that delays Step 1 to decrypt the escrow after expiry learns only the server secret, which is useless for predicting the outcome without the contents and nonce. The trade-off is that the proof document is no longer self-resolving *before* the live reveal; see §3.2.
 
 **Step 1 — Client Commitment:**
 The client, without knowledge of the contents, commits to:
@@ -93,8 +94,8 @@ The client, without knowledge of the contents, commits to:
 
 All fields are signed with the client's Ed25519 key. At this point, both parties are irrevocably committed.
 
-**Step 2 — Contents Reveal:**
-The server reveals the actual session contents. The client verifies that `SHA256(contents) == contents_commitment` from Step 0. If verification fails, the client MUST abort and retain the proof document for dispute evidence.
+**Step 2 — Contents Reveal (the live step):**
+The server reveals the actual session contents **and the server nonce**. The client verifies that `SHA256(contents || session_id) == contents_commitment` and `SHA256(server_nonce) == server_nonce_commitment` from Step 0. If either fails, the client MUST abort and retain the proof document for dispute evidence. This is the protocol's only genuinely-live step: it is the point at which outcome-determining information first exists, and it can only be reached *after* the client has irrevocably committed (Step 1), so neither party can grind.
 
 **Step 3 — Client Reveal:**
 The client reveals their secret in plaintext. The server verifies that `SHA256(client_secret) == client_commitment` from Step 1.
@@ -102,7 +103,7 @@ The client reveals their secret in plaintext. The server verifies that `SHA256(c
 **Step 4 — Server Reveal + Outcome:**
 The server reveals their secret in plaintext. Both parties can now independently compute the outcome:
 ```
-combined_randomness = SHA256(client_secret || server_secret)
+combined_randomness = SHA256(client_secret || server_secret || server_nonce)
 ```
 The server includes the computed outcome in the message, signed. The client verifies the computation independently.
 
@@ -111,8 +112,11 @@ The server includes the computed outcome in the message, signed. The client veri
 **Client ghosts after Step 1 (does not reveal at Step 3):**
 The server waits for the timelock to expire, decrypts the client's timelock-encrypted secret, verifies it against the client's commitment, and computes the outcome. The server's own proof document contains everything needed; no additional storage is required for abandoned sessions.
 
-**Server ghosts after Step 1 (does not reveal contents at Step 2, or does not reveal at Step 4):**
-The client waits for the timelock to expire, decrypts the server's timelock-encrypted bundle (containing both the server secret and the contents), verifies both against the commitments from Step 0, and resolves the outcome unilaterally. The server gains no advantage from ghosting — it already committed its secret and the contents hash. The proof document is fully self-resolving; no server cooperation is needed after timelock expiry.
+**Server ghosts *before* the live reveal (no Step 2):**
+The session cannot be resolved and voids cleanly. This is harmless: the server disclosed nothing outcome-determining (the contents and nonce were never revealed) and never learned the client secret, so it gained no advantage by aborting. There is no favourable outcome being withheld, because no outcome was ever determined.
+
+**Server ghosts *after* the live reveal (Step 2 done, no Step 4):**
+The client waits for the timelock to expire, decrypts the server secret from its escrow, verifies it against the Step 0 commitment, and resolves the outcome using the secret together with the contents and nonce already disclosed at Step 2. The server gains no advantage from ghosting here — by Step 2 it had already revealed everything except its secret, which the timelock surrenders. No server cooperation is needed after expiry.
 
 **Contents verification fails at Step 2:**
 The client aborts the session. The proof document (Steps 0–2) constitutes cryptographic evidence that the server committed to one set of contents but revealed another. This is a binary, unambiguous proof of server misbehaviour.
@@ -162,7 +166,8 @@ Signatures follow an explicit field-listing approach (inspired by DNAEDOT): each
   "session_id": "<unique session identifier>",
   "server_commitment": "<SHA256 hash of server secret>",
   "contents_commitment": "<SHA256 hash of contents || session_id>",
-  "server_timelock_encrypted": "<timelock ciphertext of {secret, contents}>",
+  "server_nonce_commitment": "<SHA256 hash of server nonce>",
+  "server_timelock_encrypted": "<timelock ciphertext of the server secret>",
   "drand_round": 1234567,
   "metadata": { },
   "signatures": {
@@ -170,8 +175,8 @@ Signatures follow an explicit field-listing approach (inspired by DNAEDOT): each
       "signature": "<Ed25519 signature>",
       "signed_fields": [
         "version", "session_id", "server_commitment",
-        "contents_commitment", "server_timelock_encrypted",
-        "drand_round"
+        "contents_commitment", "server_nonce_commitment",
+        "server_timelock_encrypted", "drand_round"
       ],
       "algorithm": "Ed25519",
       "signer": "<server public key>"
@@ -218,10 +223,12 @@ The `version` field is included in all messages and is covered by all signatures
 ### 6.1 Combining Secrets
 
 ```
-combined_randomness = SHA256(client_secret || server_secret)
+combined_randomness = SHA256(client_secret || server_secret || server_nonce)
 ```
 
-Both secrets are 32 bytes (256 bits) of cryptographically random data. The concatenation order is fixed (client first, server second) to ensure deterministic results.
+All three inputs are 32 bytes (256 bits) of cryptographically random data. The concatenation order is fixed (client, server, nonce) to ensure deterministic results.
+
+The **server nonce** is the critical defence against the stall-then-grind attack. Consider a malicious client that delays its Step 1 commitment until the server's timelock round elapses, decrypts the escrow, and then grinds candidate `client_secret` values toward a favourable outcome. Two ingredients are required to grind: the server secret *and* the ability to map randomness to an outcome. The server secret leaks on expiry, and for regulated applications the distribution is often **public** — so secrecy of the contents alone is not enough. By folding a committed-but-not-escrowed nonce into the randomness, the outcome is unpredictable until Step 2, which the client can only reach *after* irrevocably committing. The nonce is never placed under timelock; a stalling client therefore gains nothing, and the grinding incentive is removed structurally rather than by policing commit timing.
 
 ### 6.2 Mapping to Outcomes
 
@@ -268,12 +275,12 @@ Timelock durations are expressed as drand round numbers, not wall-clock time. Th
 When a session stalls and the timelock expires:
 
 1. The waiting party fetches the beacon value for the target drand round from the drand network.
-2. Using the beacon value, the waiting party decrypts the other party's timelock-encrypted payload. For the server's payload, this yields both the server secret and the contents. For the client's payload, this yields the client secret.
-3. The waiting party verifies the decrypted values against the commitment hashes from the protocol exchange.
-4. If verification passes, the outcome is computed normally using both secrets and the contents.
-5. If verification fails (the encrypted values were junk), this constitutes cryptographic proof of misbehaviour by the committing party.
+2. Using the beacon value, the waiting party decrypts the other party's timelock-encrypted secret (the server's escrow yields its secret; the client's yields the client secret). The contents and the server nonce are taken from the live Step 2 reveal already present in the proof document.
+3. The waiting party verifies the decrypted secret against the commitment hash from the protocol exchange.
+4. If verification passes, the outcome is computed normally from both secrets, the nonce, and the contents.
+5. If verification fails (the encrypted value was junk), this constitutes cryptographic proof of misbehaviour by the committing party.
 
-The proof document is fully self-resolving: it contains all timelock ciphertexts, so any party holding the proof can independently resolve the session after timelock expiry without cooperation from either participant.
+A proof document is resolvable in this way only once the live Step 2 reveal has occurred (it then carries the contents and nonce in plaintext). A server that ghosts before Step 2 leaves a void, unresolvable session by design — see §3.2 and Appendix B.
 
 ---
 
@@ -395,9 +402,11 @@ Contents commitments are salted with the session ID (`SHA256(contents || session
 
 ## Appendix B: Storage & Self-Resolving Proofs
 
-Because the server's timelock payload contains both the secret and the contents, the proof document is fully self-resolving. Any party holding the proof document can compute the outcome after timelock expiry without cooperation from either participant.
+A proof document is self-resolving **once the live Step 2 reveal has occurred**: it then contains the contents and nonce in plaintext, and the server's secret is recoverable from its timelock escrow at expiry. Any party holding such a document can compute the outcome without cooperation from either participant.
 
-This eliminates server-side storage for abandoned sessions entirely. If a client ghosts and later returns with a proof document, the server can recompute the outcome from the proof. If the client never returns, there is nothing to store.
+Before Step 2, the document is deliberately **not** self-resolving — the contents and nonce exist only as commitments, and the server's escrow holds the secret alone. A server that ghosts that early produces an unresolvable, void session (§3.2). This is the price of stall-then-grind resistance (§6.1), and it is a fair one: the unresolvable window is exactly the window in which no outcome-determining information has been disclosed, so nothing of value is lost.
+
+This eliminates server-side storage for abandoned sessions. If a client ghosts after the live reveal and later returns with a proof document, the server can recompute the outcome from the proof. If the client never returns, there is nothing to store.
 
 For the client's timelock payload (which contains only the 32-byte client secret), server-side resolution of a client ghost requires only the beacon value — everything else is in the proof document the server already holds from the protocol exchange.
 
@@ -407,7 +416,8 @@ For the client's timelock payload (which contains only the 32-byte client secret
 |--------|------------|
 | Server delays response after seeing client commitment | Server commits first (Step 0); cannot adapt after seeing client's Step 1 |
 | Client selectively participates based on favourable contents | Client commits (Step 1) before contents are revealed (Step 2) |
-| Server commits junk under timelock | Timelock expiry reveals junk bundle, constituting cryptographic proof of misbehaviour |
+| Server commits junk under timelock | Timelock expiry reveals the junk secret, mismatching the Step 0 commitment — cryptographic proof of misbehaviour |
 | Client ghosts after seeing unfavourable outcome potential | Timelock expiry lets server decrypt client secret and resolve unilaterally |
+| **Client stalls Step 1 to decrypt the escrow and grind a favourable outcome** | Server escrows only its secret; the contents and nonce are revealed only at the live Step 2, reachable only *after* the client has committed. With the nonce folded into the randomness (§6.1), an early-decrypted secret is insufficient to predict the outcome, even for public distributions |
 | Replay of old session messages | Session ID included in all signatures; contents commitment salted with session ID |
 | Server publishes different contents to different clients | Allowed — TRAP ensures fairness of the randomness for disclosed contents, not uniformity of contents across clients |

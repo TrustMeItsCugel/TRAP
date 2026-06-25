@@ -9,7 +9,7 @@ use super::ProtocolError;
 use crate::beacon::BeaconValue;
 use crate::crypto::hash::{combine_secrets, commit_contents, verify_commitment};
 use crate::crypto::sign::verify_field_signature;
-use crate::crypto::timelock::{decrypt_secret, decrypt_server_payload};
+use crate::crypto::timelock::decrypt_secret;
 use crate::outcome::evaluate;
 use crate::types::contents::Outcome;
 use crate::types::messages::ProofDocument;
@@ -124,6 +124,9 @@ pub fn verify_proof(
         if commit_contents(&cr.contents, session_id) != sc.contents_commitment {
             commitments_match = false;
         }
+        if !verify_commitment(&cr.server_nonce, &sc.server_nonce_commitment) {
+            commitments_match = false;
+        }
     }
     if let (Some(cc), Some(clr)) = (&proof.client_commitment, &proof.client_reveal) {
         if !verify_commitment(&clr.client_secret, &cc.client_commitment) {
@@ -147,7 +150,7 @@ pub fn verify_proof(
         &proof.contents_reveal,
         commitments_match,
     ) {
-        let combined = combine_secrets(&clr.client_secret, &sr.server_secret);
+        let combined = combine_secrets(&clr.client_secret, &sr.server_secret, &cr.server_nonce);
         if combined == sr.combined_randomness {
             if let Ok(o) = evaluate(&cr.contents, &combined) {
                 outcome_verified = o == sr.outcome;
@@ -155,20 +158,15 @@ pub fn verify_proof(
             }
         }
     }
-    // Timelock path: resolve from ciphertexts using the beacon (V8).
-    else if let (Some(beacon), true) = (beacon, commitments_match) {
+    // Timelock path: resolve from ciphertexts using the beacon (V8). The
+    // contents and nonce come from the in-document live reveal — the server
+    // timelock escrows only its secret. A document without a contents reveal
+    // (server ghosted before Step 2) is therefore unresolvable by design.
+    else if let (Some(beacon), Some(cr), true) = (beacon, &proof.contents_reveal, commitments_match)
+    {
         if beacon.round == sc.drand_round {
-            // Server bundle gives secret + contents.
-            if let Ok(payload) =
-                decrypt_server_payload(&sc.server_timelock_encrypted, &beacon.signature)
-            {
-                let secret_ok =
-                    verify_commitment(&payload.secret, &sc.server_commitment);
-                let contents_ok =
-                    commit_contents(&payload.contents, session_id) == sc.contents_commitment;
-                if !(secret_ok && contents_ok) {
-                    commitments_match = false;
-                } else {
+            match decrypt_secret(&sc.server_timelock_encrypted, &beacon.signature) {
+                Ok(server_secret) if verify_commitment(&server_secret, &sc.server_commitment) => {
                     // Client secret: prefer in-document reveal, else timelock.
                     let client_secret = if let Some(clr) = &proof.client_reveal {
                         Some(clr.client_secret)
@@ -188,15 +186,16 @@ pub fn verify_proof(
                         None
                     };
                     if let Some(cs) = client_secret {
-                        let combined = combine_secrets(&cs, &payload.secret);
-                        if let Ok(o) = evaluate(&payload.contents, &combined) {
+                        let combined = combine_secrets(&cs, &server_secret, &cr.server_nonce);
+                        if let Ok(o) = evaluate(&cr.contents, &combined) {
                             outcome = Some(o);
                             outcome_verified = true;
                         }
                     }
                 }
-            } else {
-                commitments_match = false;
+                // Decryptable but mismatched, or undecryptable: junk escrow.
+                Ok(_) => commitments_match = false,
+                Err(_) => commitments_match = false,
             }
         }
     }

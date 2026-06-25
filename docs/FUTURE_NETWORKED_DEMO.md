@@ -174,7 +174,7 @@ Start server, start client, watch the 5-step exchange happen over the network. P
 Start server, start client, client exits after Step 1. Server waits for timelock, resolves.
 
 **D3 — Server ghost:**
-Start server, start client, server exits after Step 1. Client waits for timelock, decrypts bundle, resolves.
+Start server, start client, server reveals contents+nonce at Step 2 then exits. Client waits for timelock, decrypts the server secret, resolves. (A server that exits before Step 2 instead voids the session cleanly.)
 
 **D4 — Server misbehaviour:**
 Start server with `--cheat` flag (encrypts junk). Client detects mismatch on timelock resolution.

@@ -3,9 +3,9 @@
 //! paths run fully offline.
 
 use trap_core::beacon::{BeaconClient, BeaconValue, ChainInfo, MockBeaconClient};
-use trap_core::crypto::hash::commit;
+use trap_core::crypto::hash::{commit, verify_commitment};
 use trap_core::crypto::sign::sign_fields;
-use trap_core::crypto::timelock::{encrypt_secret, encrypt_server_payload, ServerTimelockPayload};
+use trap_core::crypto::timelock::{decrypt_secret, encrypt_secret};
 use trap_core::crypto::Identity;
 use trap_core::protocol::client::ClientSession;
 use trap_core::protocol::server::ServerSession;
@@ -146,10 +146,12 @@ fn u1_client_ghosts_server_resolves_via_timelock() {
     let (server, step0) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("u1"), &pk()).unwrap();
     let (client, step1) = ClientSession::accept(&p.client_id, step0, &pk()).unwrap();
-    let (server, _step2) = server
+    let (server, step2) = server
         .receive_client_commitment(&p.server_id, step1)
         .unwrap();
-    // Client ghosts at Step 3. After expiry the server fetches the beacon.
+    // Client processes the live reveal but ghosts at Step 3 (never sends it
+    // to the server). After expiry the server fetches the beacon.
+    let (client, _step3) = client.receive_contents(&p.client_id, step2).unwrap();
     let beacon = mock_client().beacon(ROUND).unwrap();
     let (server, outcome) = server.resolve_with_beacon(&beacon).unwrap();
 
@@ -158,26 +160,30 @@ fn u1_client_ghosts_server_resolves_via_timelock() {
         server.proof().resolution,
         Some(ResolutionMethod::TimelockClientPayload)
     );
-    // The honest client, had it resolved too, computes the same outcome.
+    // The honest client, holding the live reveal, resolves to the same
+    // outcome from the server's escrowed secret.
     let (_, client_outcome) = client.resolve_with_beacon(&beacon).unwrap();
     assert_eq!(outcome, client_outcome);
 }
 
 #[test]
-fn u3_server_ghosts_before_contents_client_self_resolves() {
-    // The self-resolving bundle: client never saw the contents, yet can
-    // resolve unilaterally because the bundle carries {secret, contents}.
+fn u3_server_ghosts_before_live_reveal_voids_cleanly() {
+    // New semantics: the server's timelock escrows only its secret — never
+    // the contents or nonce. A server that ghosts before the live Step 2
+    // reveal leaves a session that CANNOT be resolved, and that is the
+    // intended, harmless outcome: the server disclosed nothing
+    // outcome-determining and never learned the client secret, so it gained
+    // no advantage. (This is what removes the stall-then-grind incentive.)
     let p = parties();
     let (_server, step0) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("u3"), &pk()).unwrap();
     let (client, _step1) = ClientSession::accept(&p.client_id, step0, &pk()).unwrap();
-    // Server ghosts immediately after Step 0/1.
-    let (client, outcome) = client.resolve_with_beacon(&beacon_1000()).unwrap();
-    assert_eq!(client.outcome().unwrap(), &outcome);
-    assert_eq!(
-        client.proof().resolution,
-        Some(ResolutionMethod::TimelockServerPayload)
-    );
+    // Server ghosts immediately after Step 0/1 — no contents reveal exists.
+    let failure = client.resolve_with_beacon(&beacon_1000()).unwrap_err();
+    assert!(matches!(
+        failure.error,
+        ProtocolError::InvalidState { expected: "ContentsRevealed", .. }
+    ));
 }
 
 #[test]
@@ -205,29 +211,28 @@ fn u4_server_ghosts_after_contents_bundle_must_agree() {
 }
 
 #[test]
-fn u5_server_junk_bundle_is_provable() {
+fn u5_server_junk_escrow_is_provable() {
     // Malicious server: commitments are well-formed, but the timelock
-    // bundle encrypts a DIFFERENT secret than committed.
+    // escrows a DIFFERENT secret than committed. The fraud surfaces when the
+    // client resolves a post-reveal server ghost (Step 4 missing).
     let p = parties();
     let real_secret = [0x11u8; 32];
     let junk_secret = [0x22u8; 32];
+    let server_nonce = [0x33u8; 32];
     let contents = sample_contents();
     let session_id = "u5";
 
     let server_commitment = commit(&real_secret);
-    let contents_commitment =
-        trap_core::crypto::hash::commit_contents(&contents, session_id);
-    let bundle = ServerTimelockPayload {
-        secret: junk_secret, // <- fraud
-        contents: contents.clone(),
-    };
-    let ct = encrypt_server_payload(&bundle, ROUND, &pk()).unwrap();
+    let contents_commitment = trap_core::crypto::hash::commit_contents(&contents, session_id);
+    let server_nonce_commitment = commit(&server_nonce);
+    let ct = encrypt_secret(&junk_secret, ROUND, &pk()).unwrap(); // <- fraud
 
     let buf = fields::server_commitment_fields(
         PROTOCOL_VERSION,
         session_id,
         &server_commitment,
         &contents_commitment,
+        &server_nonce_commitment,
         &ct,
         ROUND,
         None,
@@ -238,6 +243,7 @@ fn u5_server_junk_bundle_is_provable() {
         session_id: session_id.into(),
         server_commitment,
         contents_commitment,
+        server_nonce_commitment,
         server_timelock_encrypted: ct,
         drand_round: ROUND,
         metadata: None,
@@ -246,13 +252,38 @@ fn u5_server_junk_bundle_is_provable() {
 
     // The client cannot detect the fraud at commitment time...
     let (client, _step1) = ClientSession::accept(&p.client_id, step0, &pk()).unwrap();
-    // ...but at expiry, the fraud is self-evidencing.
+
+    // The server performs an honest-looking live reveal (contents + nonce),
+    // signed and chained, so the client advances past Step 2.
+    let proof = client.proof().clone();
+    let cr_buf = fields::contents_reveal_fields(&contents, &server_nonce);
+    let priors = [
+        &proof.server_commitment.signature,
+        &proof.client_commitment.as_ref().unwrap().signature,
+    ];
+    let cr_sig = sign_fields(
+        &p.server_id,
+        &cr_buf.as_fields(),
+        &priors,
+        &[
+            fields::PRIOR_SERVER_COMMITMENT,
+            fields::PRIOR_CLIENT_COMMITMENT,
+        ],
+    );
+    let reveal = ContentsReveal {
+        contents,
+        server_nonce,
+        signature: cr_sig,
+    };
+    let (client, _step3) = client.receive_contents(&p.client_id, reveal).unwrap();
+
+    // ...but at expiry, the junk escrow is self-evidencing.
     let failure = client.resolve_with_beacon(&beacon_1000()).unwrap_err();
     assert!(matches!(
         failure.error,
         ProtocolError::CommitmentMismatch { ref field } if field.contains("server_commitment")
     ));
-    // The evidence (signed junk bundle) is preserved in the proof.
+    // The evidence (signed junk escrow + reveal) is preserved in the proof.
     assert!(verify_proof(&failure.proof, None).is_ok());
 }
 
@@ -306,7 +337,8 @@ fn u7_contents_reveal_mismatch_detected() {
     // Forge a different ContentsReveal, properly signed by the server.
     let mut other = sample_contents();
     other.operations[0].id = "tier_switched".into();
-    let buf = fields::contents_reveal_fields(&other);
+    let nonce = [0u8; 32];
+    let buf = fields::contents_reveal_fields(&other, &nonce);
     let proof = client.proof().clone();
     let priors = [
         &proof.server_commitment.signature,
@@ -323,6 +355,7 @@ fn u7_contents_reveal_mismatch_detected() {
     );
     let forged = ContentsReveal {
         contents: other,
+        server_nonce: nonce,
         signature,
     };
     drop(step2);
@@ -378,6 +411,31 @@ fn u8_client_reveal_mismatch_rejected() {
         failure.error,
         ProtocolError::CommitmentMismatch { ref field } if field == "client_commitment"
     ));
+}
+
+#[test]
+fn stall_grind_resistance_server_tlock_leaks_only_secret() {
+    // The stall-then-grind attack: a malicious client delays Step 1 until the
+    // server's timelock expires, decrypts the escrow, and grinds a favourable
+    // client_secret. This is defeated structurally — the escrow holds ONLY the
+    // server secret, never the contents or the nonce — so even with public
+    // odds the stalling client cannot predict the outcome. And to learn the
+    // contents/nonce it must first reach the live Step 2, which requires
+    // having already committed (Catch-22).
+    let p = parties();
+    let (_server, step0) =
+        ServerSession::initiate(&p.server_id, sample_contents(), config("grind"), &pk()).unwrap();
+
+    // Decrypt the escrow exactly as a stalling client holding the beacon would.
+    let leaked =
+        decrypt_secret(&step0.server_timelock_encrypted, &beacon_1000().signature).unwrap();
+
+    // What leaks is precisely the committed server secret (32 bytes) — and
+    // nothing more. The contents and nonce are present at Step 0 only as
+    // hashes (commitments); no preimage is escrowed to grind against.
+    assert!(verify_commitment(&leaked, &step0.server_commitment));
+    assert_ne!(step0.contents_commitment, [0u8; 32]);
+    assert_ne!(step0.server_nonce_commitment, [0u8; 32]);
 }
 
 // ---- SM: state machine ----
@@ -498,12 +556,17 @@ fn v7_partial_proof_verifies_to_last_step() {
 
 #[test]
 fn v8_third_party_verifies_timelock_resolution() {
-    // Build a U3-style abandoned session, then verify as an outsider
-    // holding only the proof document and the public beacon value.
+    // Build a U4-style abandoned session (server reveals contents+nonce at
+    // the live Step 2, then ghosts), then verify as an outsider holding only
+    // the proof document and the public beacon value.
     let p = parties();
-    let (_server, step0) =
+    let (server, step0) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("v8"), &pk()).unwrap();
-    let (client, _step1) = ClientSession::accept(&p.client_id, step0, &pk()).unwrap();
+    let (client, step1) = ClientSession::accept(&p.client_id, step0, &pk()).unwrap();
+    let (_server, step2) = server
+        .receive_client_commitment(&p.server_id, step1)
+        .unwrap();
+    let (client, _step3) = client.receive_contents(&p.client_id, step2).unwrap();
     let (client, outcome) = client.resolve_with_beacon(&beacon_1000()).unwrap();
 
     let r = verify_proof(client.proof(), Some(&beacon_1000())).unwrap();

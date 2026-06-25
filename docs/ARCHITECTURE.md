@@ -98,7 +98,8 @@ pub struct ServerCommitment {
     pub session_id: String,
     pub server_commitment: [u8; 32],     // SHA256(server_secret)
     pub contents_commitment: [u8; 32],   // SHA256(contents || session_id)
-    pub server_timelock_encrypted: Vec<u8>, // timelock({secret, contents})
+    pub server_nonce_commitment: [u8; 32], // SHA256(server_nonce) — revealed live at Step 2
+    pub server_timelock_encrypted: Vec<u8>, // timelock(server_secret) — secret only
     pub drand_round: u64,
     pub metadata: Option<serde_json::Value>,
     pub signature: FieldSignature,

@@ -9,9 +9,7 @@ use super::{ProtocolError, ProtocolFailure};
 use crate::beacon::BeaconValue;
 use crate::crypto::hash::{combine_secrets, commit, commit_contents, verify_commitment};
 use crate::crypto::sign::{sign_fields, verify_field_signature};
-use crate::crypto::timelock::{
-    decrypt_secret, encrypt_server_payload, ServerTimelockPayload,
-};
+use crate::crypto::timelock::{decrypt_secret, encrypt_secret};
 use crate::crypto::Identity;
 use crate::outcome::evaluate;
 use crate::types::contents::{Contents, Outcome};
@@ -43,6 +41,8 @@ impl State {
 /// The server's view of one protocol session.
 pub struct ServerSession {
     server_secret: [u8; 32],
+    /// Live entropy: committed at Step 0, revealed at Step 2, never escrowed.
+    server_nonce: [u8; 32],
     contents: Contents,
     config: SessionConfig,
     proof: ProofDocument,
@@ -52,8 +52,10 @@ pub struct ServerSession {
 impl ServerSession {
     /// Step 0: create a session and produce the server commitment.
     ///
-    /// Generates the server secret, commits to it and the contents, and
-    /// timelock-encrypts the {secret, contents} bundle to the target round.
+    /// Generates the server secret and a live nonce, commits to the secret,
+    /// the contents, and the nonce, and timelock-encrypts the server secret
+    /// (only) to the target round. The contents and nonce are withheld until
+    /// the live Step 2 reveal so a stalling client cannot grind the outcome.
     pub fn initiate(
         identity: &Identity,
         contents: Contents,
@@ -64,23 +66,21 @@ impl ServerSession {
 
         let mut server_secret = [0u8; 32];
         rand::rngs::OsRng.fill_bytes(&mut server_secret);
+        let mut server_nonce = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut server_nonce);
 
         let server_commitment = commit(&server_secret);
         let contents_commitment = commit_contents(&contents, &config.session_id);
-        let server_timelock_encrypted = encrypt_server_payload(
-            &ServerTimelockPayload {
-                secret: server_secret,
-                contents: contents.clone(),
-            },
-            config.drand_round,
-            beacon_public_key,
-        )?;
+        let server_nonce_commitment = commit(&server_nonce);
+        let server_timelock_encrypted =
+            encrypt_secret(&server_secret, config.drand_round, beacon_public_key)?;
 
         let buf: FieldBuf = fields::server_commitment_fields(
             &config.version,
             &config.session_id,
             &server_commitment,
             &contents_commitment,
+            &server_nonce_commitment,
             &server_timelock_encrypted,
             config.drand_round,
             config.metadata.as_ref(),
@@ -92,6 +92,7 @@ impl ServerSession {
             session_id: config.session_id.clone(),
             server_commitment,
             contents_commitment,
+            server_nonce_commitment,
             server_timelock_encrypted,
             drand_round: config.drand_round,
             metadata: config.metadata.clone(),
@@ -100,6 +101,7 @@ impl ServerSession {
 
         let session = ServerSession {
             server_secret,
+            server_nonce,
             contents,
             config,
             proof: ProofDocument {
@@ -145,8 +147,8 @@ impl ServerSession {
 
         self.proof.client_commitment = Some(msg);
 
-        // Step 2: reveal contents, signed over the chain so far.
-        let buf = fields::contents_reveal_fields(&self.contents);
+        // Step 2: reveal contents AND the live nonce, signed over the chain.
+        let buf = fields::contents_reveal_fields(&self.contents, &self.server_nonce);
         let cc_sig = &self.proof.client_commitment.as_ref().unwrap().signature;
         let priors = [&self.proof.server_commitment.signature, cc_sig];
         let signature = sign_fields(
@@ -160,6 +162,7 @@ impl ServerSession {
         );
         let reveal = ContentsReveal {
             contents: self.contents.clone(),
+            server_nonce: self.server_nonce,
             signature,
         };
         self.proof.contents_reveal = Some(reveal.clone());
@@ -203,7 +206,7 @@ impl ServerSession {
         let client_secret = msg.client_secret;
         self.proof.client_reveal = Some(msg);
 
-        let combined = combine_secrets(&client_secret, &self.server_secret);
+        let combined = combine_secrets(&client_secret, &self.server_secret, &self.server_nonce);
         let outcome = match evaluate(&self.contents, &combined) {
             Ok(o) => o,
             Err(e) => return Err(self.fail(e.into())),
@@ -289,7 +292,7 @@ impl ServerSession {
             }));
         }
 
-        let combined = combine_secrets(&client_secret, &self.server_secret);
+        let combined = combine_secrets(&client_secret, &self.server_secret, &self.server_nonce);
         let outcome = match evaluate(&self.contents, &combined) {
             Ok(o) => o,
             Err(e) => return Err(self.fail(e.into())),

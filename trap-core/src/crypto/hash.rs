@@ -36,10 +36,23 @@ pub fn commit_contents(contents: &Contents, session_id: &str) -> [u8; 32] {
     sha256(&[&canonical_contents_bytes(contents), session_id.as_bytes()])
 }
 
-/// Combine both parties' secrets (Spec §6.1):
-/// SHA256(client_secret || server_secret). Order is fixed.
-pub fn combine_secrets(client_secret: &[u8; 32], server_secret: &[u8; 32]) -> [u8; 32] {
-    sha256(&[client_secret, server_secret])
+/// Combine both parties' secrets with the server's live-revealed nonce
+/// (Spec §6.1): SHA256(client_secret || server_secret || server_nonce).
+/// Order is fixed.
+///
+/// `server_nonce` is committed at Step 0 but, unlike `server_secret`, is
+/// NOT escrowed under timelock — it is disclosed only at the live contents
+/// reveal (Step 2). Folding it into the randomness is what defeats the
+/// stall-then-grind attack even when the contents distribution is public:
+/// a client that decrypts `server_secret` early still cannot predict the
+/// outcome without the nonce, and the nonce does not exist for it until
+/// after it has irrevocably committed its own secret.
+pub fn combine_secrets(
+    client_secret: &[u8; 32],
+    server_secret: &[u8; 32],
+    server_nonce: &[u8; 32],
+) -> [u8; 32] {
+    sha256(&[client_secret, server_secret, server_nonce])
 }
 
 /// Derive an operation-specific random value (Spec §6.3):
@@ -112,14 +125,25 @@ mod tests {
     fn h6_combine_order_dependent() {
         let a = [1; 32];
         let b = [2; 32];
-        assert_ne!(combine_secrets(&a, &b), combine_secrets(&b, &a));
+        let n = [3; 32];
+        assert_ne!(combine_secrets(&a, &b, &n), combine_secrets(&b, &a, &n));
     }
 
     #[test]
     fn h7_combine_deterministic() {
         let a = [1; 32];
         let b = [2; 32];
-        assert_eq!(combine_secrets(&a, &b), combine_secrets(&a, &b));
+        let n = [3; 32];
+        assert_eq!(combine_secrets(&a, &b, &n), combine_secrets(&a, &b, &n));
+    }
+
+    #[test]
+    fn h12_combine_depends_on_nonce() {
+        // The live-revealed nonce must change the outcome randomness; this is
+        // what blocks stall-then-grind when the distribution is public.
+        let a = [1; 32];
+        let b = [2; 32];
+        assert_ne!(combine_secrets(&a, &b, &[3; 32]), combine_secrets(&a, &b, &[4; 32]));
     }
 
     #[test]

@@ -1,15 +1,16 @@
 //! Client-side session state machine. Spec §3.
 //!
 //! The client commits blind (Step 1, before seeing contents), verifies the
-//! contents reveal against the Step 0 commitment, and can resolve
-//! unilaterally from the server's timelock bundle after expiry (U3/U4).
+//! contents and nonce revealed at the live Step 2, and — once that live
+//! reveal has happened — can resolve unilaterally from the server's
+//! timelock-escrowed secret after expiry (U4).
 
 use super::fields::{self};
 use super::{ProtocolError, ProtocolFailure};
 use crate::beacon::BeaconValue;
 use crate::crypto::hash::{combine_secrets, commit, commit_contents, verify_commitment};
 use crate::crypto::sign::{sign_fields, verify_field_signature};
-use crate::crypto::timelock::{decrypt_server_payload, encrypt_secret};
+use crate::crypto::timelock::{decrypt_secret, encrypt_secret};
 use crate::crypto::Identity;
 use crate::outcome::evaluate;
 use crate::types::contents::Outcome;
@@ -146,6 +147,15 @@ impl ClientSession {
             }));
         }
 
+        // The live nonce must match its Step 0 commitment too.
+        let expected_nonce = self.proof.server_commitment.server_nonce_commitment;
+        if !verify_commitment(&msg.server_nonce, &expected_nonce) {
+            self.proof.contents_reveal = Some(msg); // evidence of the mismatch
+            return Err(self.fail(ProtocolError::CommitmentMismatch {
+                field: "server_nonce_commitment".into(),
+            }));
+        }
+
         self.proof.contents_reveal = Some(msg);
 
         // Step 3: reveal our secret.
@@ -216,7 +226,8 @@ impl ClientSession {
         }
 
         // Independently recompute the combined randomness and outcome.
-        let combined = combine_secrets(&self.client_secret, &msg.server_secret);
+        let server_nonce = self.proof.contents_reveal.as_ref().expect("state").server_nonce;
+        let combined = combine_secrets(&self.client_secret, &msg.server_secret, &server_nonce);
         if combined != msg.combined_randomness {
             self.proof.server_reveal = Some(msg);
             return Err(self.fail(ProtocolError::CommitmentMismatch {
@@ -243,16 +254,24 @@ impl ClientSession {
         Ok((self, outcome))
     }
 
-    /// Unhappy path (U3/U4): the server stopped responding. Decrypt the
-    /// server's timelock bundle with the round's beacon, verify both the
-    /// secret and contents against the Step 0 commitments, and resolve.
+    /// Unhappy path (U4): the server revealed the contents and nonce at the
+    /// live Step 2 but then stopped (no Step 4). After expiry the client
+    /// decrypts the server secret from its timelock and resolves.
+    ///
+    /// Note the deliberate asymmetry with the old design: the server's
+    /// timelock now escrows only its secret, never the contents or nonce.
+    /// If the server ghosts *before* the live reveal (no `contents_reveal`
+    /// in the document), the session is unresolvable and voids cleanly —
+    /// which is harmless, because the server never disclosed anything
+    /// outcome-determining and could not have known the client secret, so
+    /// it gained no advantage by aborting.
     pub fn resolve_with_beacon(
         mut self,
         beacon: &BeaconValue,
     ) -> Result<(Self, Outcome), ProtocolFailure> {
         if matches!(self.state, State::Complete { .. }) {
             return Err(self.fail(ProtocolError::InvalidState {
-                expected: "AwaitingContents or AwaitingServerReveal",
+                expected: "AwaitingServerReveal",
                 got: "Complete",
             }));
         }
@@ -265,43 +284,38 @@ impl ClientSession {
             }));
         }
 
-        // Decrypt the {secret, contents} bundle. Parse failure or
-        // commitment mismatch is cryptographic proof of misbehaviour (U5).
-        let payload = match decrypt_server_payload(
+        // Pre-reveal server ghost: nothing to resolve, session voids cleanly.
+        let (contents, server_nonce) = match &self.proof.contents_reveal {
+            Some(cr) => (cr.contents.clone(), cr.server_nonce),
+            None => {
+                return Err(self.fail(ProtocolError::InvalidState {
+                    expected: "ContentsRevealed",
+                    got: "AwaitingContents (server ghosted before the live reveal)",
+                }))
+            }
+        };
+
+        // Decrypt the server secret. Parse failure or commitment mismatch is
+        // cryptographic proof of misbehaviour (U5).
+        let server_secret = match decrypt_secret(
             &self.proof.server_commitment.server_timelock_encrypted,
             &beacon.signature,
         ) {
-            Ok(p) => p,
+            Ok(s) => s,
             Err(e) => return Err(self.fail(e.into())),
         };
 
         if !verify_commitment(
-            &payload.secret,
+            &server_secret,
             &self.proof.server_commitment.server_commitment,
         ) {
             return Err(self.fail(ProtocolError::CommitmentMismatch {
                 field: "server_commitment (timelock payload was junk)".into(),
             }));
         }
-        let expected = self.proof.server_commitment.contents_commitment;
-        if commit_contents(&payload.contents, &self.session_id) != expected {
-            return Err(self.fail(ProtocolError::CommitmentMismatch {
-                field: "contents_commitment (timelock payload was junk)".into(),
-            }));
-        }
 
-        // U4 consistency: if contents were already revealed at Step 2, the
-        // bundle must agree.
-        if let Some(revealed) = &self.proof.contents_reveal {
-            if revealed.contents != payload.contents {
-                return Err(self.fail(ProtocolError::CommitmentMismatch {
-                    field: "contents (bundle disagrees with Step 2 reveal)".into(),
-                }));
-            }
-        }
-
-        let combined = combine_secrets(&self.client_secret, &payload.secret);
-        let outcome = match evaluate(&payload.contents, &combined) {
+        let combined = combine_secrets(&self.client_secret, &server_secret, &server_nonce);
+        let outcome = match evaluate(&contents, &combined) {
             Ok(o) => o,
             Err(e) => return Err(self.fail(e.into())),
         };
