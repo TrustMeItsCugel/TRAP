@@ -1,7 +1,7 @@
 # TRAP: Architecture Document
 
-**Version:** 0.1.0-draft
-**Companion to:** TRAP Protocol Specification v0.1.0-draft
+**Version:** 0.2.0-draft
+**Companion to:** TRAP Protocol Specification v0.2.0-draft
 
 ---
 

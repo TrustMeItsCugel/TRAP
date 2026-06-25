@@ -1,6 +1,6 @@
 # TRAP: Trustless Random Agreement Protocol
 
-**Version:** 0.1.0-draft
+**Version:** 0.2.0-draft
 **Status:** Draft
 **License:** MIT
 
@@ -162,7 +162,7 @@ Signatures follow an explicit field-listing approach (inspired by DNAEDOT): each
 
 ```json
 {
-  "version": "0.1.0",
+  "version": "0.2.0",
   "session_id": "<unique session identifier>",
   "server_commitment": "<SHA256 hash of server secret>",
   "contents_commitment": "<SHA256 hash of contents || session_id>",

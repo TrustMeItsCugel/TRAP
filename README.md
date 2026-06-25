@@ -55,7 +55,7 @@ holding (`ghost-server.proof.json`, hex elided):
 ```jsonc
 {
   "server_commitment": {                          // Step 0 — signed by the server
-    "version": "0.1.0",
+    "version": "0.2.0",
     "session_id": "demo-ghost-server",
     "server_commitment":   "c41b…9a07",           // SHA256(server_secret)
     "contents_commitment": "5f2e…d8b3",           // SHA256(canonical_json(contents) || session_id)

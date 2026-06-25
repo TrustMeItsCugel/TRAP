@@ -1,6 +1,6 @@
 # TRAP: Test Scenarios
 
-**Version:** 0.1.0-draft
+**Version:** 0.2.0-draft
 **Companion to:** TRAP Protocol Specification & Architecture Document
 
 ---
