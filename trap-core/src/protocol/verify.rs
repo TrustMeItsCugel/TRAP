@@ -45,16 +45,27 @@ pub struct VerifyResult {
 /// supplying the target round's `beacon` lets verification resolve and
 /// check timelock payloads (V8); without it, verification covers the
 /// signatures and any present reveals (V7).
+///
+/// `expected_server_key` authenticates the session's origin. When `Some`,
+/// the Step 0 signer (the root of the whole signature chain) MUST equal it,
+/// and verification fails otherwise. **Pass the known, publicly-discoverable
+/// server key whenever you are verifying that a *specific* server is
+/// accountable** (Spec §2.1, §4.3). Passing `None` checks only that the
+/// document is internally self-consistent — it does NOT establish who
+/// produced it, so anyone could mint such a document with their own key.
 pub fn verify_proof(
     proof: &ProofDocument,
     beacon: Option<&BeaconValue>,
+    expected_server_key: Option<&[u8; 32]>,
 ) -> Result<VerifyResult, ProtocolError> {
     let sc = &proof.server_commitment;
     let session_id = &sc.session_id;
 
     // ---- signature chain (V1, V2, V6) ----
+    // Pinning the Step 0 signer to `expected_server_key` authenticates the
+    // entire chain: every later server signature is pinned to this same key.
     let buf = fields::server_commitment_fields_of(sc);
-    verify_field_signature(&sc.signature, &buf.as_fields(), &[], None)?;
+    verify_field_signature(&sc.signature, &buf.as_fields(), &[], expected_server_key)?;
     let server_signer = sc.signature.signer;
 
     let mut progress = SessionProgress::ServerCommitted;

@@ -148,8 +148,8 @@ fn write_proof(name: &str, proof: &ProofDocument) {
     println!("  proof written to {path}");
 }
 
-fn show_verify(proof: &ProofDocument, beacon: Option<&BeaconValue>) {
-    match verify_proof(proof, beacon) {
+fn show_verify(proof: &ProofDocument, beacon: Option<&BeaconValue>, server_key: &[u8; 32]) {
+    match verify_proof(proof, beacon, Some(server_key)) {
         Ok(r) => println!(
             "  verify: progress={:?} signatures={} commitments={} outcome_verified={} outcome={}",
             r.progress,
@@ -212,7 +212,7 @@ fn main() {
     let (_server, step4) = server.receive_client_reveal(&server_id, step3).unwrap();
     let (client, outcome) = client.receive_server_reveal(step4).unwrap();
     println!("  outcome: {}", serde_json::to_string(&outcome).unwrap());
-    show_verify(client.proof(), None);
+    show_verify(client.proof(), None, &server_id.public_key());
     write_proof("cooperative", client.proof());
 
     // ---------- Scenario 2: client ghosts; server resolves ----------
@@ -230,7 +230,7 @@ fn main() {
     let beacon = (env.beacon_fetch)();
     let (server, outcome) = server.resolve_with_beacon(&beacon).unwrap();
     println!("  outcome: {}", serde_json::to_string(&outcome).unwrap());
-    show_verify(server.proof(), Some(&beacon));
+    show_verify(server.proof(), Some(&beacon), &server_id.public_key());
     write_proof("ghost-client", server.proof());
 
     // ---------- Scenario 3: server ghosts after the live reveal ----------
@@ -250,7 +250,7 @@ fn main() {
     let beacon = (env.beacon_fetch)();
     let (client, outcome) = client.resolve_with_beacon(&beacon).unwrap();
     println!("  outcome: {}", serde_json::to_string(&outcome).unwrap());
-    show_verify(client.proof(), Some(&beacon));
+    show_verify(client.proof(), Some(&beacon), &server_id.public_key());
     write_proof("ghost-server", client.proof());
 
     println!("\nDone. Three proof documents written; any third party can verify them.");

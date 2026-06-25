@@ -114,9 +114,10 @@ fn p1_full_cooperative_flow() {
         Some(ResolutionMethod::Cooperative)
     );
 
-    // Both proofs verify standalone, without any beacon.
+    // Both proofs verify standalone, without any beacon — and authenticate
+    // against the known server key.
     for proof in [server.proof(), client.proof()] {
-        let r = verify_proof(proof, None).unwrap();
+        let r = verify_proof(proof, None, Some(&p.server_id.public_key())).unwrap();
         assert_eq!(r.progress, SessionProgress::Complete);
         assert!(r.signatures_valid);
         assert!(r.commitments_match);
@@ -284,7 +285,7 @@ fn u5_server_junk_escrow_is_provable() {
         ProtocolError::CommitmentMismatch { ref field } if field.contains("server_commitment")
     ));
     // The evidence (signed junk escrow + reveal) is preserved in the proof.
-    assert!(verify_proof(&failure.proof, None).is_ok());
+    assert!(verify_proof(&failure.proof, None, None).is_ok());
 }
 
 #[test]
@@ -514,7 +515,7 @@ fn v6_tampered_midchain_signature_detected() {
         .unwrap()
         .signature
         .signature[5] ^= 0xFF;
-    assert!(verify_proof(&proof, None).is_err());
+    assert!(verify_proof(&proof, None, None).is_err());
 }
 
 #[test]
@@ -522,7 +523,7 @@ fn v6b_tampered_field_detected() {
     let mut proof = complete_proof();
     proof.server_reveal.as_mut().unwrap().server_secret[0] ^= 0xFF;
     // Either the signature check fails outright or commitments mismatch.
-    match verify_proof(&proof, None) {
+    match verify_proof(&proof, None, None) {
         Err(_) => {}
         Ok(r) => assert!(!r.commitments_match || !r.outcome_verified),
     }
@@ -538,7 +539,7 @@ fn v6c_swapped_outcome_detected() {
         first,
         trap_core::types::contents::OutcomeValue::Selected("epic_forged".into()),
     );
-    assert!(verify_proof(&proof, None).is_err());
+    assert!(verify_proof(&proof, None, None).is_err());
 }
 
 #[test]
@@ -548,7 +549,7 @@ fn v7_partial_proof_verifies_to_last_step() {
     proof.client_reveal = None;
     proof.server_reveal = None;
     proof.resolution = None;
-    let r = verify_proof(&proof, None).unwrap();
+    let r = verify_proof(&proof, None, None).unwrap();
     assert_eq!(r.progress, SessionProgress::ClientCommitted);
     assert!(r.signatures_valid);
     assert!(r.outcome.is_none());
@@ -569,7 +570,7 @@ fn v8_third_party_verifies_timelock_resolution() {
     let (client, _step3) = client.receive_contents(&p.client_id, step2).unwrap();
     let (client, outcome) = client.resolve_with_beacon(&beacon_1000()).unwrap();
 
-    let r = verify_proof(client.proof(), Some(&beacon_1000())).unwrap();
+    let r = verify_proof(client.proof(), Some(&beacon_1000()), None).unwrap();
     assert!(r.signatures_valid);
     assert!(r.commitments_match);
     assert!(r.outcome_verified);
@@ -577,9 +578,29 @@ fn v8_third_party_verifies_timelock_resolution() {
 
     // Without the beacon, the same proof verifies signatures but cannot
     // produce an outcome.
-    let r2 = verify_proof(client.proof(), None).unwrap();
+    let r2 = verify_proof(client.proof(), None, None).unwrap();
     assert!(r2.signatures_valid);
     assert!(r2.outcome.is_none());
+}
+
+#[test]
+fn v9_verifier_authenticates_server_key() {
+    // A proof is internally consistent regardless of who signed Step 0;
+    // authentication requires pinning the expected server key.
+    let proof = complete_proof();
+    let real_server = proof.server_commitment.signature.signer;
+
+    // Right key: authenticates.
+    let r = verify_proof(&proof, None, Some(&real_server)).unwrap();
+    assert_eq!(r.progress, SessionProgress::Complete);
+
+    // Wrong key: rejected outright, even though the document is self-consistent.
+    let imposter = Identity::generate().public_key();
+    assert!(verify_proof(&proof, None, Some(&imposter)).is_err());
+
+    // No expected key: still verifies as internally consistent (but this
+    // does NOT establish origin).
+    assert!(verify_proof(&proof, None, None).is_ok());
 }
 
 // ---- SER: serialisation ----
@@ -589,7 +610,7 @@ fn ser1_proof_document_round_trips_and_reverifies() {
     let proof = complete_proof();
     let json = serde_json::to_string_pretty(&proof).unwrap();
     let back: trap_core::types::messages::ProofDocument = serde_json::from_str(&json).unwrap();
-    let r = verify_proof(&back, None).unwrap();
+    let r = verify_proof(&back, None, None).unwrap();
     assert_eq!(r.progress, SessionProgress::Complete);
     assert!(r.outcome_verified);
 }

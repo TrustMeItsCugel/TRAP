@@ -146,7 +146,9 @@ Server-side TRAP implementations have no equivalent independence requirement —
 
 ### 4.3 Verification Tools
 
-Proof verification — confirming that signatures are valid, commitments match reveals, and outcomes were correctly computed — is a stateless, deterministic operation on a self-contained document. Verification tools SHOULD be independent of both the server and the client implementation, providing a third point of trust. Any party with the proof document and access to the relevant public keys can perform full verification.
+Proof verification — confirming that signatures are valid, commitments match reveals, and outcomes were correctly computed — is a stateless, deterministic operation on a self-contained document. Verification tools SHOULD be independent of both the server and the client implementation, providing a third point of trust.
+
+A verifier MUST authenticate the document against the **known, publicly-discoverable server public key** (§2.1) by pinning the Step 0 signer to it; this transitively authenticates the whole signature chain. Checking only internal consistency — that the signatures and commitments agree among themselves, without pinning the server key — does **not** establish origin: anyone could mint a self-consistent document with their own key. (In this implementation, `verify_proof` takes an `expected_server_key`; supplying it performs the authentication, and passing `None` is the consistency-only mode.)
 
 ---
 
