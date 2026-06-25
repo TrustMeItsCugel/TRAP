@@ -61,8 +61,15 @@ pub fn derive_operation_random(combined: &[u8; 32], operation_id: &str) -> [u8; 
     sha256(&[combined, operation_id.as_bytes()])
 }
 
-/// Constant-time-ish commitment check (length is fixed; we rely on the
-/// hash making timing attacks moot for this use case).
+/// Check that `secret` opens `commitment` (i.e. `SHA256(secret) ==
+/// commitment`).
+///
+/// This is a plain, non-constant-time byte comparison — and that is fine
+/// here. Every call site compares a commitment against its *already
+/// revealed* preimage (the secret is public by the time it is verified, or
+/// has just been decrypted from an expired timelock), so there is no secret
+/// value whose comparison timing could leak. Do NOT reuse this to compare
+/// values that are still meant to be confidential.
 pub fn verify_commitment(secret: &[u8; 32], commitment: &[u8; 32]) -> bool {
     commit(secret) == *commitment
 }

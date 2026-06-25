@@ -239,4 +239,27 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn r5_full_width_range_errors_not_panics() {
+        // A near-full-width range used to overflow pick_range's u64 span to
+        // zero and panic in reduce_mod. evaluate must now return a clean
+        // error on this attacker-supplied input instead of crashing.
+        let c = Contents {
+            operations: vec![Operation {
+                id: "r".into(),
+                depends_on: None,
+                op: OperationType::Range {
+                    range: RangeParams {
+                        min: i64::MIN,
+                        max: i64::MAX,
+                    },
+                },
+            }],
+        };
+        assert!(matches!(
+            evaluate(&c, &[0; 32]),
+            Err(ContentsError::RangeTooWide(_))
+        ));
+    }
 }

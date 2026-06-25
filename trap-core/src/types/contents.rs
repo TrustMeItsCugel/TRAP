@@ -87,15 +87,27 @@ pub enum ContentsError {
     EmptyOutcomes(String),
     #[error("operation {0}: invalid range (min > max)")]
     InvalidRange(String),
+    #[error("operation {0}: range too wide (span exceeds u64)")]
+    RangeTooWide(String),
     #[error("operation {0}: weights sum to zero")]
     ZeroWeights(String),
     #[error("operation {0}: dependency result {1} not present in outcome table")]
     MissingDependencyBranch(String, String),
 }
 
+/// Whether an inclusive `[min, max]` range's span (`max - min + 1`) fits in
+/// a `u64`. The only range that fails is the full-width `i64::MIN..=i64::MAX`
+/// (span exactly 2^64). `outcome::pick_range` reduces the derived randomness
+/// modulo this span, so a span that wrapped to zero would panic — `validate`
+/// rejects it up front.
+fn range_span_fits_u64(min: i64, max: i64) -> bool {
+    (max as i128 - min as i128 + 1) <= u64::MAX as i128
+}
+
 impl Contents {
     /// Validate structural invariants: unique ids, resolvable dependencies,
-    /// acyclic with depth <= MAX_DEPENDENCY_DEPTH, non-degenerate tables.
+    /// acyclic with depth <= MAX_DEPENDENCY_DEPTH, non-degenerate tables,
+    /// and ranges whose span fits in a u64.
     pub fn validate(&self) -> Result<(), ContentsError> {
         use std::collections::HashMap;
 
@@ -140,6 +152,9 @@ impl Contents {
                     if range.min > range.max {
                         return Err(ContentsError::InvalidRange(op.id.clone()));
                     }
+                    if !range_span_fits_u64(range.min, range.max) {
+                        return Err(ContentsError::RangeTooWide(op.id.clone()));
+                    }
                 }
                 OperationType::DependentDistribution { outcomes } => {
                     if outcomes.is_empty() {
@@ -161,6 +176,9 @@ impl Contents {
                     for r in ranges.values() {
                         if r.min > r.max {
                             return Err(ContentsError::InvalidRange(op.id.clone()));
+                        }
+                        if !range_span_fits_u64(r.min, r.max) {
+                            return Err(ContentsError::RangeTooWide(op.id.clone()));
                         }
                     }
                 }
@@ -209,6 +227,39 @@ mod tests {
             operations: vec![dist("tier", &[("common", 7000), ("rare", 2500), ("epic", 500)])],
         };
         assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn full_width_range_rejected() {
+        // The full-width i64 range overflows the u64 span used by pick_range;
+        // validate must reject it rather than letting it panic.
+        let c = Contents {
+            operations: vec![Operation {
+                id: "r".into(),
+                depends_on: None,
+                op: OperationType::Range {
+                    range: RangeParams {
+                        min: i64::MIN,
+                        max: i64::MAX,
+                    },
+                },
+            }],
+        };
+        assert_eq!(c.validate(), Err(ContentsError::RangeTooWide("r".into())));
+        // A merely large range that still fits in u64 remains valid.
+        let ok = Contents {
+            operations: vec![Operation {
+                id: "r".into(),
+                depends_on: None,
+                op: OperationType::Range {
+                    range: RangeParams {
+                        min: 0,
+                        max: i64::MAX,
+                    },
+                },
+            }],
+        };
+        assert!(ok.validate().is_ok());
     }
 
     #[test]

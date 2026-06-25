@@ -18,6 +18,8 @@ pub enum ProtocolError {
     Crypto(#[from] CryptoError),
     #[error(transparent)]
     Beacon(#[from] BeaconError),
+    #[error("unacceptable timelock round: {0}")]
+    UnacceptableRound(#[from] crate::beacon::RoundError),
     #[error(transparent)]
     Contents(#[from] ContentsError),
     #[error("invalid state: expected {expected}, got {got}")]

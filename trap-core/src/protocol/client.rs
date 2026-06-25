@@ -7,7 +7,7 @@
 
 use super::fields::{self};
 use super::{ProtocolError, ProtocolFailure};
-use crate::beacon::BeaconValue;
+use crate::beacon::{validate_target_round, BeaconValue, ChainInfo, RoundPolicy};
 use crate::crypto::hash::{combine_secrets, commit, commit_contents, verify_commitment};
 use crate::crypto::sign::{sign_fields, verify_field_signature};
 use crate::crypto::timelock::{decrypt_secret, encrypt_secret};
@@ -49,18 +49,41 @@ pub struct ClientSession {
     state: State,
 }
 
+/// Freshness check for the server-chosen timelock round, supplied to
+/// [`ClientSession::accept`]. A production client MUST validate the round
+/// before committing (Spec §7.1) — a server that names an already-elapsed or
+/// out-of-policy round would otherwise undermine the timelock; supplying a
+/// `RoundCheck` here is the built-in way to satisfy that requirement.
+pub struct RoundCheck<'a> {
+    pub chain: &'a ChainInfo,
+    /// Current time, unix seconds.
+    pub now_unix: u64,
+    pub policy: RoundPolicy,
+}
+
 impl ClientSession {
     /// Step 0→1: verify and accept the server's commitment, produce ours.
     ///
     /// The client commits *blind* — the contents are not yet revealed.
+    ///
+    /// When `round_check` is `Some`, the server-chosen `drand_round` is
+    /// validated against the policy and rejected if unacceptable (Spec §7.1).
+    /// Passing `None` skips the check — acceptable only when the round is
+    /// validated out of band or in fixed-round test/replay scenarios.
     pub fn accept(
         identity: &Identity,
         msg: ServerCommitment,
         beacon_public_key: &[u8],
+        round_check: Option<&RoundCheck>,
     ) -> Result<(Self, ClientCommitment), ProtocolError> {
         // Verify the server's Step 0 signature.
         let buf = fields::server_commitment_fields_of(&msg);
         verify_field_signature(&msg.signature, &buf.as_fields(), &[], None)?;
+
+        // Reject an unacceptable timelock horizon before committing anything.
+        if let Some(rc) = round_check {
+            validate_target_round(rc.chain, msg.drand_round, rc.now_unix, &rc.policy)?;
+        }
 
         let mut client_secret = [0u8; 32];
         rand::rngs::OsRng.fill_bytes(&mut client_secret);

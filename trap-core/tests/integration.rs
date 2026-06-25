@@ -96,7 +96,7 @@ fn p1_full_cooperative_flow() {
     let (server, step0) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("p1"), &pk()).unwrap();
     // Step 1 (client commits blind)
-    let (client, step1) = ClientSession::accept(&p.client_id, step0, &pk()).unwrap();
+    let (client, step1) = ClientSession::accept(&p.client_id, step0, &pk(), None).unwrap();
     // Step 2
     let (server, step2) = server
         .receive_client_commitment(&p.server_id, step1)
@@ -114,9 +114,10 @@ fn p1_full_cooperative_flow() {
         Some(ResolutionMethod::Cooperative)
     );
 
-    // Both proofs verify standalone, without any beacon.
+    // Both proofs verify standalone, without any beacon — and authenticate
+    // against the known server key.
     for proof in [server.proof(), client.proof()] {
-        let r = verify_proof(proof, None).unwrap();
+        let r = verify_proof(proof, None, Some(&p.server_id.public_key())).unwrap();
         assert_eq!(r.progress, SessionProgress::Complete);
         assert!(r.signatures_valid);
         assert!(r.commitments_match);
@@ -145,7 +146,7 @@ fn u1_client_ghosts_server_resolves_via_timelock() {
     let p = parties();
     let (server, step0) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("u1"), &pk()).unwrap();
-    let (client, step1) = ClientSession::accept(&p.client_id, step0, &pk()).unwrap();
+    let (client, step1) = ClientSession::accept(&p.client_id, step0, &pk(), None).unwrap();
     let (server, step2) = server
         .receive_client_commitment(&p.server_id, step1)
         .unwrap();
@@ -177,7 +178,7 @@ fn u3_server_ghosts_before_live_reveal_voids_cleanly() {
     let p = parties();
     let (_server, step0) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("u3"), &pk()).unwrap();
-    let (client, _step1) = ClientSession::accept(&p.client_id, step0, &pk()).unwrap();
+    let (client, _step1) = ClientSession::accept(&p.client_id, step0, &pk(), None).unwrap();
     // Server ghosts immediately after Step 0/1 — no contents reveal exists.
     let failure = client.resolve_with_beacon(&beacon_1000()).unwrap_err();
     assert!(matches!(
@@ -191,7 +192,7 @@ fn u4_server_ghosts_after_contents_bundle_must_agree() {
     let p = parties();
     let (server, step0) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("u4"), &pk()).unwrap();
-    let (client, step1) = ClientSession::accept(&p.client_id, step0, &pk()).unwrap();
+    let (client, step1) = ClientSession::accept(&p.client_id, step0, &pk(), None).unwrap();
     let (server, step2) = server
         .receive_client_commitment(&p.server_id, step1)
         .unwrap();
@@ -251,7 +252,7 @@ fn u5_server_junk_escrow_is_provable() {
     };
 
     // The client cannot detect the fraud at commitment time...
-    let (client, _step1) = ClientSession::accept(&p.client_id, step0, &pk()).unwrap();
+    let (client, _step1) = ClientSession::accept(&p.client_id, step0, &pk(), None).unwrap();
 
     // The server performs an honest-looking live reveal (contents + nonce),
     // signed and chained, so the client advances past Step 2.
@@ -284,7 +285,7 @@ fn u5_server_junk_escrow_is_provable() {
         ProtocolError::CommitmentMismatch { ref field } if field.contains("server_commitment")
     ));
     // The evidence (signed junk escrow + reveal) is preserved in the proof.
-    assert!(verify_proof(&failure.proof, None).is_ok());
+    assert!(verify_proof(&failure.proof, None, None).is_ok());
 }
 
 #[test]
@@ -329,7 +330,7 @@ fn u7_contents_reveal_mismatch_detected() {
     let p = parties();
     let (server, step0) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("u7"), &pk()).unwrap();
-    let (client, step1) = ClientSession::accept(&p.client_id, step0, &pk()).unwrap();
+    let (client, step1) = ClientSession::accept(&p.client_id, step0, &pk(), None).unwrap();
     let (_server, step2) = server
         .receive_client_commitment(&p.server_id, step1)
         .unwrap();
@@ -374,7 +375,7 @@ fn u8_client_reveal_mismatch_rejected() {
     let p = parties();
     let (server, step0) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("u8"), &pk()).unwrap();
-    let (client, step1) = ClientSession::accept(&p.client_id, step0, &pk()).unwrap();
+    let (client, step1) = ClientSession::accept(&p.client_id, step0, &pk(), None).unwrap();
     let (server, step2) = server
         .receive_client_commitment(&p.server_id, step1)
         .unwrap();
@@ -457,7 +458,7 @@ fn sm_wrong_beacon_round_rejected() {
     let p = parties();
     let (_server, step0) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("smr"), &pk()).unwrap();
-    let (client, _step1) = ClientSession::accept(&p.client_id, step0, &pk()).unwrap();
+    let (client, _step1) = ClientSession::accept(&p.client_id, step0, &pk(), None).unwrap();
     let wrong = BeaconValue {
         round: 999,
         signature: hex::decode(ROUND_1000_SIG_HEX).unwrap(),
@@ -481,12 +482,45 @@ fn sm_session_isolation_signatures_dont_transfer() {
         ServerSession::initiate(&p.server_id, sample_contents(), config("iso-a"), &pk()).unwrap();
     let (sb, _step0_b) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("iso-b"), &pk()).unwrap();
-    let (_client, step1_for_a) = ClientSession::accept(&p.client_id, step0_a, &pk()).unwrap();
+    let (_client, step1_for_a) = ClientSession::accept(&p.client_id, step0_a, &pk(), None).unwrap();
     // Replay the Step 1 against session B.
     let failure = sb
         .receive_client_commitment(&p.server_id, step1_for_a)
         .unwrap_err();
     assert!(matches!(failure.error, ProtocolError::Crypto(_)));
+}
+
+#[test]
+fn sm_accept_rejects_unacceptable_round() {
+    use trap_core::beacon::{round_to_time, ChainInfo, RoundPolicy};
+    use trap_core::protocol::client::RoundCheck;
+
+    let p = parties();
+    let chain = ChainInfo::quicknet();
+
+    // Helper: a Step 0 whose timelock targets ROUND (=1000).
+    let make_step0 = || {
+        ServerSession::initiate(&p.server_id, sample_contents(), config("rc"), &pk())
+            .unwrap()
+            .1
+    };
+
+    // `now` placing the current round well past ROUND → already elapsed.
+    let stale = RoundCheck {
+        chain: &chain,
+        now_unix: round_to_time(&chain, ROUND) + 1_000_000,
+        policy: RoundPolicy::default(),
+    };
+    let err = ClientSession::accept(&p.client_id, make_step0(), &pk(), Some(&stale)).unwrap_err();
+    assert!(matches!(err, ProtocolError::UnacceptableRound(_)));
+
+    // `now` placing ROUND ~300 rounds ahead → within the default policy.
+    let fresh = RoundCheck {
+        chain: &chain,
+        now_unix: round_to_time(&chain, ROUND - 300),
+        policy: RoundPolicy::default(),
+    };
+    assert!(ClientSession::accept(&p.client_id, make_step0(), &pk(), Some(&fresh)).is_ok());
 }
 
 // ---- V: verification ----
@@ -495,7 +529,7 @@ fn complete_proof() -> trap_core::types::messages::ProofDocument {
     let p = parties();
     let (server, step0) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("v"), &pk()).unwrap();
-    let (client, step1) = ClientSession::accept(&p.client_id, step0, &pk()).unwrap();
+    let (client, step1) = ClientSession::accept(&p.client_id, step0, &pk(), None).unwrap();
     let (server, step2) = server
         .receive_client_commitment(&p.server_id, step1)
         .unwrap();
@@ -514,7 +548,7 @@ fn v6_tampered_midchain_signature_detected() {
         .unwrap()
         .signature
         .signature[5] ^= 0xFF;
-    assert!(verify_proof(&proof, None).is_err());
+    assert!(verify_proof(&proof, None, None).is_err());
 }
 
 #[test]
@@ -522,7 +556,7 @@ fn v6b_tampered_field_detected() {
     let mut proof = complete_proof();
     proof.server_reveal.as_mut().unwrap().server_secret[0] ^= 0xFF;
     // Either the signature check fails outright or commitments mismatch.
-    match verify_proof(&proof, None) {
+    match verify_proof(&proof, None, None) {
         Err(_) => {}
         Ok(r) => assert!(!r.commitments_match || !r.outcome_verified),
     }
@@ -538,7 +572,7 @@ fn v6c_swapped_outcome_detected() {
         first,
         trap_core::types::contents::OutcomeValue::Selected("epic_forged".into()),
     );
-    assert!(verify_proof(&proof, None).is_err());
+    assert!(verify_proof(&proof, None, None).is_err());
 }
 
 #[test]
@@ -548,7 +582,7 @@ fn v7_partial_proof_verifies_to_last_step() {
     proof.client_reveal = None;
     proof.server_reveal = None;
     proof.resolution = None;
-    let r = verify_proof(&proof, None).unwrap();
+    let r = verify_proof(&proof, None, None).unwrap();
     assert_eq!(r.progress, SessionProgress::ClientCommitted);
     assert!(r.signatures_valid);
     assert!(r.outcome.is_none());
@@ -562,14 +596,14 @@ fn v8_third_party_verifies_timelock_resolution() {
     let p = parties();
     let (server, step0) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("v8"), &pk()).unwrap();
-    let (client, step1) = ClientSession::accept(&p.client_id, step0, &pk()).unwrap();
+    let (client, step1) = ClientSession::accept(&p.client_id, step0, &pk(), None).unwrap();
     let (_server, step2) = server
         .receive_client_commitment(&p.server_id, step1)
         .unwrap();
     let (client, _step3) = client.receive_contents(&p.client_id, step2).unwrap();
     let (client, outcome) = client.resolve_with_beacon(&beacon_1000()).unwrap();
 
-    let r = verify_proof(client.proof(), Some(&beacon_1000())).unwrap();
+    let r = verify_proof(client.proof(), Some(&beacon_1000()), None).unwrap();
     assert!(r.signatures_valid);
     assert!(r.commitments_match);
     assert!(r.outcome_verified);
@@ -577,9 +611,29 @@ fn v8_third_party_verifies_timelock_resolution() {
 
     // Without the beacon, the same proof verifies signatures but cannot
     // produce an outcome.
-    let r2 = verify_proof(client.proof(), None).unwrap();
+    let r2 = verify_proof(client.proof(), None, None).unwrap();
     assert!(r2.signatures_valid);
     assert!(r2.outcome.is_none());
+}
+
+#[test]
+fn v9_verifier_authenticates_server_key() {
+    // A proof is internally consistent regardless of who signed Step 0;
+    // authentication requires pinning the expected server key.
+    let proof = complete_proof();
+    let real_server = proof.server_commitment.signature.signer;
+
+    // Right key: authenticates.
+    let r = verify_proof(&proof, None, Some(&real_server)).unwrap();
+    assert_eq!(r.progress, SessionProgress::Complete);
+
+    // Wrong key: rejected outright, even though the document is self-consistent.
+    let imposter = Identity::generate().public_key();
+    assert!(verify_proof(&proof, None, Some(&imposter)).is_err());
+
+    // No expected key: still verifies as internally consistent (but this
+    // does NOT establish origin).
+    assert!(verify_proof(&proof, None, None).is_ok());
 }
 
 // ---- SER: serialisation ----
@@ -589,7 +643,7 @@ fn ser1_proof_document_round_trips_and_reverifies() {
     let proof = complete_proof();
     let json = serde_json::to_string_pretty(&proof).unwrap();
     let back: trap_core::types::messages::ProofDocument = serde_json::from_str(&json).unwrap();
-    let r = verify_proof(&back, None).unwrap();
+    let r = verify_proof(&back, None, None).unwrap();
     assert_eq!(r.progress, SessionProgress::Complete);
     assert!(r.outcome_verified);
 }

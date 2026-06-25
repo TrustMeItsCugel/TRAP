@@ -101,6 +101,83 @@ pub fn target_round(chain: &ChainInfo, duration_seconds: u64) -> u64 {
     current_round(chain) + rounds
 }
 
+/// Acceptable bounds, expressed **in rounds**, for a server-chosen timelock
+/// horizon (Spec §7.1). The wall-clock meaning of a given lead depends on the
+/// chain's `period`; the approximate durations below assume Quicknet's
+/// 3-second period (`ChainInfo::quicknet().period`). For a different chain,
+/// scale by its period, or set the lead bounds from your own duration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RoundPolicy {
+    /// Minimum rounds the target must be in the future
+    /// (default 10 ≈ 30 s on Quicknet).
+    pub min_lead: u64,
+    /// Maximum rounds the target may be in the future
+    /// (default 1_728_000 ≈ 2 months on Quicknet).
+    pub max_lead: u64,
+}
+
+impl Default for RoundPolicy {
+    fn default() -> Self {
+        Self {
+            min_lead: 10,
+            max_lead: 1_728_000,
+        }
+    }
+}
+
+/// Why a server-chosen target round was rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum RoundError {
+    #[error("target round {target} is not in the future (current round {current})")]
+    NotInFuture { target: u64, current: u64 },
+    #[error("timelock too short: {lead} rounds ahead, minimum {min}")]
+    TooShort { lead: u64, min: u64 },
+    #[error("timelock too long: {lead} rounds ahead, maximum {max}")]
+    TooLong { lead: u64, max: u64 },
+}
+
+/// Validate that a server-chosen `target_round` is an acceptable timelock
+/// horizon given the current time (`now_unix`) and a `policy`; returns the
+/// lead (rounds until the target) on success.
+///
+/// A client MUST perform this check before committing (Spec §7.1). The
+/// timelock only protects secrets while the target round's beacon does not
+/// yet exist: a malicious server that names an already-elapsed (or imminent)
+/// round could otherwise decrypt the client's Step 1 secret immediately, and
+/// validating only at receipt is not enough — the attack is to *stall*. The
+/// `min_lead` floor bounds how soon the round may fall; the `max_lead`
+/// ceiling bounds how long an honest client might have to wait to resolve.
+/// Taking `now_unix` explicitly (rather than reading the clock) keeps this
+/// deterministic and testable.
+pub fn validate_target_round(
+    chain: &ChainInfo,
+    target_round: u64,
+    now_unix: u64,
+    policy: &RoundPolicy,
+) -> Result<u64, RoundError> {
+    let current = round_at_time(chain, now_unix);
+    if target_round <= current {
+        return Err(RoundError::NotInFuture {
+            target: target_round,
+            current,
+        });
+    }
+    let lead = target_round - current;
+    if lead < policy.min_lead {
+        return Err(RoundError::TooShort {
+            lead,
+            min: policy.min_lead,
+        });
+    }
+    if lead > policy.max_lead {
+        return Err(RoundError::TooLong {
+            lead,
+            max: policy.max_lead,
+        });
+    }
+    Ok(lead)
+}
+
 /// Mock client for tests and offline demos: serves pre-loaded values.
 pub struct MockBeaconClient {
     chain: ChainInfo,
@@ -230,6 +307,36 @@ mod tests {
         for round in [1u64, 2, 100, 1000, 12345678] {
             assert_eq!(round_at_time(&c, round_to_time(&c, round)), round);
         }
+    }
+
+    #[test]
+    fn validate_target_round_bounds() {
+        let c = chain(1000, 3); // round_at_time: (t-1000)/3 + 1
+        let now = 1000; // current round = 1
+        let policy = RoundPolicy {
+            min_lead: 10,
+            max_lead: 1000,
+        };
+        // In-window: target 100 is 99 rounds ahead.
+        assert_eq!(validate_target_round(&c, 100, now, &policy), Ok(99));
+        // Already elapsed: target equals current round.
+        assert!(matches!(
+            validate_target_round(&c, 1, now, &policy),
+            Err(RoundError::NotInFuture { .. })
+        ));
+        // Too soon: 5 rounds ahead, below the floor of 10.
+        assert!(matches!(
+            validate_target_round(&c, 6, now, &policy),
+            Err(RoundError::TooShort { lead: 5, min: 10 })
+        ));
+        // Too far: 2000 rounds ahead, above the ceiling of 1000.
+        assert!(matches!(
+            validate_target_round(&c, 2001, now, &policy),
+            Err(RoundError::TooLong {
+                lead: 2000,
+                max: 1000
+            })
+        ));
     }
 
     #[test]
