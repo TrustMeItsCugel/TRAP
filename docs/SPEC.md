@@ -216,6 +216,8 @@ The **proof document** is the complete JSON document at any step. It is self-con
 
 The `version` field is included in all messages and is covered by all signatures. This enables future protocol evolution while maintaining backward verification of existing proofs.
 
+Any change to the on-wire schema (adding or removing required fields) or to the randomness derivation formula constitutes a **breaking protocol change**. Implementations that introduce such changes MUST increment the `PROTOCOL_VERSION` constant (in `trap-core/src/lib.rs`) and update the `version` field emitted in all messages accordingly. Old and new peers sharing the same version string will interpret messages differently and MUST NOT be allowed to interoperate.
+
 ---
 
 ## 6. Randomness Derivation
