@@ -6,13 +6,13 @@
 //! With `--live` (requires the `live` feature and network access), the
 //! timelock targets a real future round and resolution waits for it.
 
-use trap_core::beacon::{BeaconClient, BeaconValue, ChainInfo, MockBeaconClient};
+use trap_core::beacon::{BeaconClient, BeaconValue, ChainInfo, MockBeaconClient, RoundPolicy};
 use trap_core::crypto::Identity;
-use trap_core::protocol::client::ClientSession;
+use trap_core::protocol::client::{ClientSession, RoundCheck};
 use trap_core::protocol::server::ServerSession;
 use trap_core::protocol::verify::verify_proof;
 use trap_core::types::contents::{Contents, Operation, OperationType, RangeParams};
-use trap_core::types::messages::{ProofDocument, SessionConfig};
+use trap_core::types::messages::{ClientCommitment, ProofDocument, ServerCommitment, SessionConfig};
 use trap_core::PROTOCOL_VERSION;
 
 // Recorded Quicknet round-1000 vectors (public, immutable) for offline use.
@@ -81,6 +81,9 @@ fn sample_contents() -> Contents {
 struct Env {
     chain: ChainInfo,
     round: u64,
+    /// Whether the target round is a genuine future round (live) or the
+    /// recorded historical round (offline). Selects the accept API used.
+    live: bool,
     beacon_fetch: Box<dyn Fn() -> BeaconValue>,
 }
 
@@ -91,6 +94,7 @@ fn offline_env() -> Env {
     Env {
         chain,
         round: OFFLINE_ROUND,
+        live: false,
         beacon_fetch: Box::new(move || mock.beacon(OFFLINE_ROUND).unwrap()),
     }
 }
@@ -108,6 +112,7 @@ fn live_env() -> Env {
     Env {
         chain,
         round,
+        live: true,
         beacon_fetch: Box::new(move || {
             let when = round_to_time(&chain_clone, round);
             loop {
@@ -165,6 +170,34 @@ fn show_verify(proof: &ProofDocument, beacon: Option<&BeaconValue>, server_key: 
     }
 }
 
+/// Accept Step 0 the way a real client should. In live mode the target is a
+/// genuine future round, so use the default checked `ClientSession::accept`
+/// with a `RoundCheck` — this is the API production code should copy. Offline,
+/// the demo targets a fixed, long-elapsed historical round (1000) backed by a
+/// recorded beacon, which the freshness check would correctly reject; that is
+/// exactly what the loudly-named `accept_unchecked` bypass is for.
+fn client_accept(
+    env: &Env,
+    client_id: &Identity,
+    step0: ServerCommitment,
+    pk: &[u8],
+) -> (ClientSession, ClientCommitment) {
+    if env.live {
+        let now_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let rc = RoundCheck {
+            chain: &env.chain,
+            now_unix,
+            policy: RoundPolicy::default(),
+        };
+        ClientSession::accept(client_id, step0, pk, &rc).expect("accept (live, checked)")
+    } else {
+        ClientSession::accept_unchecked(client_id, step0, pk).expect("accept_unchecked (offline)")
+    }
+}
+
 fn main() {
     let live = std::env::args().any(|a| a == "--live");
     let env = if live {
@@ -207,7 +240,7 @@ fn main() {
         pk,
     )
     .unwrap();
-    let (client, step1) = ClientSession::accept_unchecked(&client_id, step0, pk).unwrap();
+    let (client, step1) = client_accept(&env, &client_id, step0, pk);
     let (server, step2) = server.receive_client_commitment(&server_id, step1).unwrap();
     let (client, step3) = client.receive_contents(&client_id, step2).unwrap();
     let (_server, step4) = server.receive_client_reveal(&server_id, step3).unwrap();
@@ -225,7 +258,7 @@ fn main() {
         pk,
     )
     .unwrap();
-    let (_client, step1) = ClientSession::accept_unchecked(&client_id, step0, pk).unwrap();
+    let (_client, step1) = client_accept(&env, &client_id, step0, pk);
     let (server, _step2) = server.receive_client_commitment(&server_id, step1).unwrap();
     println!("  (client never sends Step 3 — waiting out the timelock)");
     let beacon = (env.beacon_fetch)();
@@ -243,7 +276,7 @@ fn main() {
         pk,
     )
     .unwrap();
-    let (client, step1) = ClientSession::accept_unchecked(&client_id, step0, pk).unwrap();
+    let (client, step1) = client_accept(&env, &client_id, step0, pk);
     // Live Step 2: the server discloses contents and nonce...
     let (_server, step2) = server.receive_client_commitment(&server_id, step1).unwrap();
     let (client, _step3) = client.receive_contents(&client_id, step2).unwrap();

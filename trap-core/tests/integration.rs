@@ -2,18 +2,21 @@
 //! Uses the real recorded Quicknet round-1000 beacon signature so timelock
 //! paths run fully offline.
 
-use trap_core::beacon::{BeaconClient, BeaconValue, ChainInfo, MockBeaconClient};
+use trap_core::beacon::{
+    round_to_time, BeaconClient, BeaconValue, ChainInfo, MockBeaconClient, RoundPolicy,
+};
 use trap_core::crypto::hash::{commit, verify_commitment};
 use trap_core::crypto::sign::sign_fields;
 use trap_core::crypto::timelock::{decrypt_secret, encrypt_secret};
 use trap_core::crypto::Identity;
-use trap_core::protocol::client::ClientSession;
+use trap_core::protocol::client::{ClientSession, RoundCheck};
 use trap_core::protocol::server::ServerSession;
 use trap_core::protocol::verify::{verify_proof, SessionProgress};
 use trap_core::protocol::{fields, ProtocolError};
 use trap_core::types::contents::{Contents, Operation, OperationType, RangeParams};
 use trap_core::types::messages::{
-    ClientReveal, ContentsReveal, ResolutionMethod, ServerCommitment, SessionConfig,
+    ClientCommitment, ClientReveal, ContentsReveal, ResolutionMethod, ServerCommitment,
+    SessionConfig,
 };
 use trap_core::PROTOCOL_VERSION;
 
@@ -87,6 +90,21 @@ fn parties() -> Parties {
     }
 }
 
+/// Accept Step 0 via the **default, checked** API — the path production
+/// clients use. The recorded beacon fixes the round at 1000, so we supply a
+/// `RoundCheck` whose synthetic "now" places that round a valid lead in the
+/// future; this exercises `ClientSession::accept` (not the bypass) while
+/// keeping the fixed-round beacon machinery working offline.
+fn accept_checked(p: &Parties, step0: ServerCommitment) -> (ClientSession, ClientCommitment) {
+    let chain = ChainInfo::quicknet();
+    let rc = RoundCheck {
+        chain: &chain,
+        now_unix: round_to_time(&chain, ROUND - 300),
+        policy: RoundPolicy::default(),
+    };
+    ClientSession::accept(&p.client_id, step0, &pk(), &rc).unwrap()
+}
+
 // ---- P: happy path ----
 
 #[test]
@@ -96,7 +114,7 @@ fn p1_full_cooperative_flow() {
     let (server, step0) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("p1"), &pk()).unwrap();
     // Step 1 (client commits blind)
-    let (client, step1) = ClientSession::accept_unchecked(&p.client_id, step0, &pk()).unwrap();
+    let (client, step1) = accept_checked(&p, step0);
     // Step 2
     let (server, step2) = server
         .receive_client_commitment(&p.server_id, step1)
@@ -146,7 +164,7 @@ fn u1_client_ghosts_server_resolves_via_timelock() {
     let p = parties();
     let (server, step0) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("u1"), &pk()).unwrap();
-    let (client, step1) = ClientSession::accept_unchecked(&p.client_id, step0, &pk()).unwrap();
+    let (client, step1) = accept_checked(&p, step0);
     let (server, step2) = server
         .receive_client_commitment(&p.server_id, step1)
         .unwrap();
@@ -178,7 +196,7 @@ fn u3_server_ghosts_before_live_reveal_voids_cleanly() {
     let p = parties();
     let (_server, step0) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("u3"), &pk()).unwrap();
-    let (client, _step1) = ClientSession::accept_unchecked(&p.client_id, step0, &pk()).unwrap();
+    let (client, _step1) = accept_checked(&p, step0);
     // Server ghosts immediately after Step 0/1 — no contents reveal exists.
     let failure = client.resolve_with_beacon(&beacon_1000()).unwrap_err();
     assert!(matches!(
@@ -192,7 +210,7 @@ fn u4_server_ghosts_after_contents_bundle_must_agree() {
     let p = parties();
     let (server, step0) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("u4"), &pk()).unwrap();
-    let (client, step1) = ClientSession::accept_unchecked(&p.client_id, step0, &pk()).unwrap();
+    let (client, step1) = accept_checked(&p, step0);
     let (server, step2) = server
         .receive_client_commitment(&p.server_id, step1)
         .unwrap();
@@ -252,7 +270,7 @@ fn u5_server_junk_escrow_is_provable() {
     };
 
     // The client cannot detect the fraud at commitment time...
-    let (client, _step1) = ClientSession::accept_unchecked(&p.client_id, step0, &pk()).unwrap();
+    let (client, _step1) = accept_checked(&p, step0);
 
     // The server performs an honest-looking live reveal (contents + nonce),
     // signed and chained, so the client advances past Step 2.
@@ -330,7 +348,7 @@ fn u7_contents_reveal_mismatch_detected() {
     let p = parties();
     let (server, step0) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("u7"), &pk()).unwrap();
-    let (client, step1) = ClientSession::accept_unchecked(&p.client_id, step0, &pk()).unwrap();
+    let (client, step1) = accept_checked(&p, step0);
     let (_server, step2) = server
         .receive_client_commitment(&p.server_id, step1)
         .unwrap();
@@ -375,7 +393,7 @@ fn u8_client_reveal_mismatch_rejected() {
     let p = parties();
     let (server, step0) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("u8"), &pk()).unwrap();
-    let (client, step1) = ClientSession::accept_unchecked(&p.client_id, step0, &pk()).unwrap();
+    let (client, step1) = accept_checked(&p, step0);
     let (server, step2) = server
         .receive_client_commitment(&p.server_id, step1)
         .unwrap();
@@ -458,7 +476,7 @@ fn sm_wrong_beacon_round_rejected() {
     let p = parties();
     let (_server, step0) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("smr"), &pk()).unwrap();
-    let (client, _step1) = ClientSession::accept_unchecked(&p.client_id, step0, &pk()).unwrap();
+    let (client, _step1) = accept_checked(&p, step0);
     let wrong = BeaconValue {
         round: 999,
         signature: hex::decode(ROUND_1000_SIG_HEX).unwrap(),
@@ -482,6 +500,8 @@ fn sm_session_isolation_signatures_dont_transfer() {
         ServerSession::initiate(&p.server_id, sample_contents(), config("iso-a"), &pk()).unwrap();
     let (sb, _step0_b) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("iso-b"), &pk()).unwrap();
+    // This test is about signature isolation, not round freshness, so the
+    // bypass is the right tool — a deliberate, reserved use of accept_unchecked.
     let (_client, step1_for_a) =
         ClientSession::accept_unchecked(&p.client_id, step0_a, &pk()).unwrap();
     // Replay the Step 1 against session B.
@@ -493,9 +513,6 @@ fn sm_session_isolation_signatures_dont_transfer() {
 
 #[test]
 fn sm_accept_rejects_unacceptable_round() {
-    use trap_core::beacon::{round_to_time, ChainInfo, RoundPolicy};
-    use trap_core::protocol::client::RoundCheck;
-
     let p = parties();
     let chain = ChainInfo::quicknet();
 
@@ -530,7 +547,7 @@ fn complete_proof() -> trap_core::types::messages::ProofDocument {
     let p = parties();
     let (server, step0) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("v"), &pk()).unwrap();
-    let (client, step1) = ClientSession::accept_unchecked(&p.client_id, step0, &pk()).unwrap();
+    let (client, step1) = accept_checked(&p, step0);
     let (server, step2) = server
         .receive_client_commitment(&p.server_id, step1)
         .unwrap();
@@ -597,7 +614,7 @@ fn v8_third_party_verifies_timelock_resolution() {
     let p = parties();
     let (server, step0) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("v8"), &pk()).unwrap();
-    let (client, step1) = ClientSession::accept_unchecked(&p.client_id, step0, &pk()).unwrap();
+    let (client, step1) = accept_checked(&p, step0);
     let (_server, step2) = server
         .receive_client_commitment(&p.server_id, step1)
         .unwrap();
