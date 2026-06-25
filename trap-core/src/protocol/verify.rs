@@ -39,6 +39,13 @@ pub struct VerifyResult {
     /// True when `outcome` was independently recomputed and, where the
     /// document claims one, matches the claim.
     pub outcome_verified: bool,
+    /// True only when an `expected_server_key` was supplied to `verify_proof`
+    /// and matched the Step 0 signer — i.e. this result establishes that a
+    /// *specific* server is accountable. A consistency-only verification
+    /// (`expected_server_key == None`) leaves this `false`. Never present a
+    /// result with `server_authenticated == false` as proof that a particular
+    /// server produced the document.
+    pub server_authenticated: bool,
 }
 
 /// Verify a proof document. For documents without a cooperative Step 4,
@@ -217,5 +224,8 @@ pub fn verify_proof(
         commitments_match,
         outcome,
         outcome_verified,
+        // Reaching here with `expected_server_key == Some` means the Step 0
+        // signer matched it (a mismatch would have returned Err above).
+        server_authenticated: expected_server_key.is_some(),
     })
 }

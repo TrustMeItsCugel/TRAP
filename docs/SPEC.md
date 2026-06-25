@@ -150,6 +150,8 @@ Proof verification — confirming that signatures are valid, commitments match r
 
 A verifier MUST authenticate the document against the **known, publicly-discoverable server public key** (§2.1) by pinning the Step 0 signer to it; this transitively authenticates the whole signature chain. Checking only internal consistency — that the signatures and commitments agree among themselves, without pinning the server key — does **not** establish origin: anyone could mint a self-consistent document with their own key. (In this implementation, `verify_proof` takes an `expected_server_key`; supplying it performs the authentication, and passing `None` is the consistency-only mode.)
 
+> **Callout — never quote a consistency-only result as accountability.** An accountability claim ("server *X* produced this outcome / committed this fraud") may cite a verification result **only** if that result was produced with the expected server key pinned. The implementation makes this checkable rather than a matter of memory: `VerifyResult::server_authenticated` is `true` only when an `expected_server_key` was supplied and matched. A result with `server_authenticated == false` proves the document is *internally consistent*, nothing more, and MUST NOT be presented as proof that a specific server is at fault.
+
 ---
 
 ## 5. Message Format & Signature Chaining
@@ -270,7 +272,9 @@ The server specifies the target drand round in Step 0. The target round is calcu
 current_round = floor((now - genesis_time) / period) + 1
 target_round = current_round + (desired_duration_seconds / period)
 ```
-Before committing at Step 1, the client **MUST** validate the server-chosen `target_round` against its own clock and policy, rejecting a round that is already elapsed, too soon (below the minimum lead), or too far (above the maximum). This is a security requirement, not a comfort preference: the timelock only protects the client's secret while the target round's beacon does not yet exist, so a server that names an elapsed or imminent round could decrypt the client's Step 1 secret immediately. Validating only at the moment of receipt is insufficient — a malicious client's attack is to *stall* — so the bound must be enforced relative to the client's current time at commit. (In this implementation, `ClientSession::accept` takes an optional `RoundCheck`; `beacon::validate_target_round` performs the check.)
+Before committing at Step 1, the client **MUST** validate the server-chosen `target_round` against its own clock and policy, rejecting a round that is already elapsed, too soon (below the minimum lead), or too far (above the maximum). This is a security requirement, not a comfort preference: the timelock only protects the client's secret while the target round's beacon does not yet exist, so a server that names an elapsed or imminent round could decrypt the client's Step 1 secret immediately. Validating only at the moment of receipt is insufficient — a malicious client's attack is to *stall* — so the bound must be enforced relative to the client's current time at commit. (In this implementation, `ClientSession::accept` takes a required `RoundCheck` and `beacon::validate_target_round` performs the check.)
+
+> **Callout — the unchecked path forfeits the timelock guarantee.** The check is enforced on the normal `ClientSession::accept` path. A bypass, `ClientSession::accept_unchecked`, exists for fixed-round test and replay flows where the round is validated out of band; it is named loudly because using it in production re-opens the stall-then-decrypt window. A production client MUST NOT commit via the unchecked path against an unvalidated, server-chosen round.
 
 Timelock durations are expressed as drand round numbers, not wall-clock time. This avoids clock synchronisation issues between parties.
 
