@@ -270,7 +270,7 @@ The server specifies the target drand round in Step 0. The target round is calcu
 current_round = floor((now - genesis_time) / period) + 1
 target_round = current_round + (desired_duration_seconds / period)
 ```
-The client can reject the session if the timelock duration is unacceptable (too short for comfort, or too long to wait in case of failure).
+Before committing at Step 1, the client **MUST** validate the server-chosen `target_round` against its own clock and policy, rejecting a round that is already elapsed, too soon (below the minimum lead), or too far (above the maximum). This is a security requirement, not a comfort preference: the timelock only protects the client's secret while the target round's beacon does not yet exist, so a server that names an elapsed or imminent round could decrypt the client's Step 1 secret immediately. Validating only at the moment of receipt is insufficient — a malicious client's attack is to *stall* — so the bound must be enforced relative to the client's current time at commit. (In this implementation, `ClientSession::accept` takes an optional `RoundCheck`; `beacon::validate_target_round` performs the check.)
 
 Timelock durations are expressed as drand round numbers, not wall-clock time. This avoids clock synchronisation issues between parties.
 

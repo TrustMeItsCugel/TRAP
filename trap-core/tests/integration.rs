@@ -96,7 +96,7 @@ fn p1_full_cooperative_flow() {
     let (server, step0) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("p1"), &pk()).unwrap();
     // Step 1 (client commits blind)
-    let (client, step1) = ClientSession::accept(&p.client_id, step0, &pk()).unwrap();
+    let (client, step1) = ClientSession::accept(&p.client_id, step0, &pk(), None).unwrap();
     // Step 2
     let (server, step2) = server
         .receive_client_commitment(&p.server_id, step1)
@@ -146,7 +146,7 @@ fn u1_client_ghosts_server_resolves_via_timelock() {
     let p = parties();
     let (server, step0) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("u1"), &pk()).unwrap();
-    let (client, step1) = ClientSession::accept(&p.client_id, step0, &pk()).unwrap();
+    let (client, step1) = ClientSession::accept(&p.client_id, step0, &pk(), None).unwrap();
     let (server, step2) = server
         .receive_client_commitment(&p.server_id, step1)
         .unwrap();
@@ -178,7 +178,7 @@ fn u3_server_ghosts_before_live_reveal_voids_cleanly() {
     let p = parties();
     let (_server, step0) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("u3"), &pk()).unwrap();
-    let (client, _step1) = ClientSession::accept(&p.client_id, step0, &pk()).unwrap();
+    let (client, _step1) = ClientSession::accept(&p.client_id, step0, &pk(), None).unwrap();
     // Server ghosts immediately after Step 0/1 — no contents reveal exists.
     let failure = client.resolve_with_beacon(&beacon_1000()).unwrap_err();
     assert!(matches!(
@@ -192,7 +192,7 @@ fn u4_server_ghosts_after_contents_bundle_must_agree() {
     let p = parties();
     let (server, step0) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("u4"), &pk()).unwrap();
-    let (client, step1) = ClientSession::accept(&p.client_id, step0, &pk()).unwrap();
+    let (client, step1) = ClientSession::accept(&p.client_id, step0, &pk(), None).unwrap();
     let (server, step2) = server
         .receive_client_commitment(&p.server_id, step1)
         .unwrap();
@@ -252,7 +252,7 @@ fn u5_server_junk_escrow_is_provable() {
     };
 
     // The client cannot detect the fraud at commitment time...
-    let (client, _step1) = ClientSession::accept(&p.client_id, step0, &pk()).unwrap();
+    let (client, _step1) = ClientSession::accept(&p.client_id, step0, &pk(), None).unwrap();
 
     // The server performs an honest-looking live reveal (contents + nonce),
     // signed and chained, so the client advances past Step 2.
@@ -330,7 +330,7 @@ fn u7_contents_reveal_mismatch_detected() {
     let p = parties();
     let (server, step0) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("u7"), &pk()).unwrap();
-    let (client, step1) = ClientSession::accept(&p.client_id, step0, &pk()).unwrap();
+    let (client, step1) = ClientSession::accept(&p.client_id, step0, &pk(), None).unwrap();
     let (_server, step2) = server
         .receive_client_commitment(&p.server_id, step1)
         .unwrap();
@@ -375,7 +375,7 @@ fn u8_client_reveal_mismatch_rejected() {
     let p = parties();
     let (server, step0) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("u8"), &pk()).unwrap();
-    let (client, step1) = ClientSession::accept(&p.client_id, step0, &pk()).unwrap();
+    let (client, step1) = ClientSession::accept(&p.client_id, step0, &pk(), None).unwrap();
     let (server, step2) = server
         .receive_client_commitment(&p.server_id, step1)
         .unwrap();
@@ -458,7 +458,7 @@ fn sm_wrong_beacon_round_rejected() {
     let p = parties();
     let (_server, step0) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("smr"), &pk()).unwrap();
-    let (client, _step1) = ClientSession::accept(&p.client_id, step0, &pk()).unwrap();
+    let (client, _step1) = ClientSession::accept(&p.client_id, step0, &pk(), None).unwrap();
     let wrong = BeaconValue {
         round: 999,
         signature: hex::decode(ROUND_1000_SIG_HEX).unwrap(),
@@ -482,12 +482,45 @@ fn sm_session_isolation_signatures_dont_transfer() {
         ServerSession::initiate(&p.server_id, sample_contents(), config("iso-a"), &pk()).unwrap();
     let (sb, _step0_b) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("iso-b"), &pk()).unwrap();
-    let (_client, step1_for_a) = ClientSession::accept(&p.client_id, step0_a, &pk()).unwrap();
+    let (_client, step1_for_a) = ClientSession::accept(&p.client_id, step0_a, &pk(), None).unwrap();
     // Replay the Step 1 against session B.
     let failure = sb
         .receive_client_commitment(&p.server_id, step1_for_a)
         .unwrap_err();
     assert!(matches!(failure.error, ProtocolError::Crypto(_)));
+}
+
+#[test]
+fn sm_accept_rejects_unacceptable_round() {
+    use trap_core::beacon::{round_to_time, ChainInfo, RoundPolicy};
+    use trap_core::protocol::client::RoundCheck;
+
+    let p = parties();
+    let chain = ChainInfo::quicknet();
+
+    // Helper: a Step 0 whose timelock targets ROUND (=1000).
+    let make_step0 = || {
+        ServerSession::initiate(&p.server_id, sample_contents(), config("rc"), &pk())
+            .unwrap()
+            .1
+    };
+
+    // `now` placing the current round well past ROUND → already elapsed.
+    let stale = RoundCheck {
+        chain: &chain,
+        now_unix: round_to_time(&chain, ROUND) + 1_000_000,
+        policy: RoundPolicy::default(),
+    };
+    let err = ClientSession::accept(&p.client_id, make_step0(), &pk(), Some(&stale)).unwrap_err();
+    assert!(matches!(err, ProtocolError::UnacceptableRound(_)));
+
+    // `now` placing ROUND ~300 rounds ahead → within the default policy.
+    let fresh = RoundCheck {
+        chain: &chain,
+        now_unix: round_to_time(&chain, ROUND - 300),
+        policy: RoundPolicy::default(),
+    };
+    assert!(ClientSession::accept(&p.client_id, make_step0(), &pk(), Some(&fresh)).is_ok());
 }
 
 // ---- V: verification ----
@@ -496,7 +529,7 @@ fn complete_proof() -> trap_core::types::messages::ProofDocument {
     let p = parties();
     let (server, step0) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("v"), &pk()).unwrap();
-    let (client, step1) = ClientSession::accept(&p.client_id, step0, &pk()).unwrap();
+    let (client, step1) = ClientSession::accept(&p.client_id, step0, &pk(), None).unwrap();
     let (server, step2) = server
         .receive_client_commitment(&p.server_id, step1)
         .unwrap();
@@ -563,7 +596,7 @@ fn v8_third_party_verifies_timelock_resolution() {
     let p = parties();
     let (server, step0) =
         ServerSession::initiate(&p.server_id, sample_contents(), config("v8"), &pk()).unwrap();
-    let (client, step1) = ClientSession::accept(&p.client_id, step0, &pk()).unwrap();
+    let (client, step1) = ClientSession::accept(&p.client_id, step0, &pk(), None).unwrap();
     let (_server, step2) = server
         .receive_client_commitment(&p.server_id, step1)
         .unwrap();

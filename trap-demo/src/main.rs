@@ -206,7 +206,7 @@ fn main() {
         pk,
     )
     .unwrap();
-    let (client, step1) = ClientSession::accept(&client_id, step0, pk).unwrap();
+    let (client, step1) = ClientSession::accept(&client_id, step0, pk, None).unwrap();
     let (server, step2) = server.receive_client_commitment(&server_id, step1).unwrap();
     let (client, step3) = client.receive_contents(&client_id, step2).unwrap();
     let (_server, step4) = server.receive_client_reveal(&server_id, step3).unwrap();
@@ -224,7 +224,7 @@ fn main() {
         pk,
     )
     .unwrap();
-    let (_client, step1) = ClientSession::accept(&client_id, step0, pk).unwrap();
+    let (_client, step1) = ClientSession::accept(&client_id, step0, pk, None).unwrap();
     let (server, _step2) = server.receive_client_commitment(&server_id, step1).unwrap();
     println!("  (client never sends Step 3 — waiting out the timelock)");
     let beacon = (env.beacon_fetch)();
@@ -242,7 +242,7 @@ fn main() {
         pk,
     )
     .unwrap();
-    let (client, step1) = ClientSession::accept(&client_id, step0, pk).unwrap();
+    let (client, step1) = ClientSession::accept(&client_id, step0, pk, None).unwrap();
     // Live Step 2: the server discloses contents and nonce...
     let (_server, step2) = server.receive_client_commitment(&server_id, step1).unwrap();
     let (client, _step3) = client.receive_contents(&client_id, step2).unwrap();
