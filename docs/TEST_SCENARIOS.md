@@ -125,11 +125,6 @@ Given a 32-byte plaintext, a round number, and the drand public key
 When `encrypt_secret()` is called
 Then it returns a non-empty ciphertext that differs from the plaintext.
 
-**T1b — Encrypt server payload produces non-empty ciphertext:**
-Given a `ServerTimelockPayload` containing a secret and contents, a round number, and the drand public key
-When `encrypt_server_payload()` is called
-Then it returns a non-empty ciphertext.
-
 **T2 — Encrypt is non-deterministic:**
 Given the same plaintext and round
 When `encrypt_secret()` is called twice
@@ -140,12 +135,6 @@ Given ciphertext encrypted to round N via `encrypt_secret()`
 And the real beacon value for round N
 When `decrypt_secret(ciphertext, beacon)` is called
 Then it returns the original plaintext.
-
-**T3b — Decrypt recovers server payload with correct beacon:**
-Given ciphertext encrypted to round N via `encrypt_server_payload()`
-And the real beacon value for round N
-When `decrypt_server_payload(ciphertext, beacon)` is called
-Then it returns the original secret and contents.
 
 **T4 — Decrypt fails with wrong beacon:**
 Given ciphertext encrypted to round N
