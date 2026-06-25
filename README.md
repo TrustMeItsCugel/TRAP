@@ -8,18 +8,21 @@ entirely off-chain, and neither can predict it, influence it,
 retroactively manipulate it — or dodge it by going silent.
 
 ```
-Step 0  Server → Client   commit(secret_S), commit(contents), tlock{secret_S, contents}
+Step 0  Server → Client   commit(secret_S), commit(contents), commit(nonce_S), tlock{secret_S}
 Step 1  Client → Server   commit(secret_C), tlock{secret_C}          (blind)
-Step 2  Server → Client   reveal contents
+Step 2  Server → Client   reveal contents, nonce_S                   (the live step)
 Step 3  Client → Server   reveal secret_C
 Step 4  Server → Client   reveal secret_S, outcome
 ```
 
-The outcome is `SHA256(secret_C || secret_S)` mapped through the committed
-contents. If either party stops responding after the commitments are
-exchanged, the other waits for the [drand](https://drand.love) beacon round
-the timelocks targeted and decrypts the absent party's payload — no
-cooperation, no arbitration, no chain. On the happy path the only traffic
+The outcome is `SHA256(secret_C || secret_S || nonce_S)` mapped through the
+committed contents. The server escrows only its secret under timelock; the
+contents and nonce are withheld until the live Step 2 reveal — which a
+stalling client can't reach without first committing, so it can't grind the
+result. Once that reveal is on the table, if a party stops responding the
+other waits for the [drand](https://drand.love) beacon round the timelocks
+targeted and decrypts the absent party's secret — no cooperation, no
+arbitration, no chain. On the happy path the only traffic
 is the five messages above — no beacon, no oracle, no third party — so
 throughput is bounded by how fast a CPU can hash and sign, not by block
 time or consensus.
@@ -46,9 +49,9 @@ odds, hashed and signed, before the client put anything on the table:
 }
 ```
 
-Then the server vanished — never revealed the table, never revealed its
-secret, never answered again. This is everything the client is left
-holding (`ghost-server.proof.json`, hex elided):
+The server disclosed the odds at the live Step 2 — then vanished before
+revealing its secret, and never answered again. This is everything the
+client is left holding (`ghost-server.proof.json`, hex elided):
 
 ```jsonc
 {
