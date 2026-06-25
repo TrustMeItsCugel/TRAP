@@ -37,6 +37,20 @@ TRAP relies on an inherent power asymmetry between participants: one party (the 
 - **Domain-agnostic.** The core protocol produces an agreed-upon random value. How that value maps to application-specific outcomes is an application-layer concern (see [Section 8: Application Layer](#8-application-layer)).
 - **High throughput by design.** The protocol operates entirely off-chain. After a one-time fetch of drand chain info at startup, the happy path requires **zero external network calls** — only standard cryptographic operations (SHA-256 hashes, Ed25519 signatures) exchanged directly between two parties, with timelock encryption performed locally using cached parameters. There is no blockchain consensus, no transaction fees, and no block confirmation delays. The drand network is only contacted to fetch a beacon value on the unhappy path when resolving an expired timelock. This makes TRAP suitable for high-frequency scenarios where blockchain-based solutions would be prohibitively slow or expensive.
 
+### 1.4 Scope at a Glance
+
+To keep the claims honest, here is what TRAP does and does not provide. Confusing these layers is the easiest way to over-trust the protocol.
+
+| Property | In scope? | Notes |
+|----------|-----------|-------|
+| **Fairness of the randomness** | ✅ Yes | Neither party can predict, bias, or grind the agreed value (§3, §6.1). |
+| **Evidence / non-repudiation** | ✅ Yes | A self-contained, signed proof document; fraud is provable (§5, Appendix C). |
+| **Delayed resolution (anti-abort)** | ✅ Yes | After the live reveal, a ghost only delays — the timelock surrenders the missing secret (§3.2). |
+| **Origin accountability** | ✅ Yes, *if pinned* | Only when the verifier pins the known server key (§4.3); otherwise the proof is merely self-consistent. |
+| **Liveness enforcement** | ❌ No | The protocol cannot force a party to respond, only make ghosting either harmless or self-incriminating. |
+| **Settlement / payment finality** | ❌ No | Application's responsibility; a pre-reveal void is harmless only if no value has settled (§8.3). |
+| **Symmetric peer-to-peer fairness** | ❌ No | Requires a power asymmetry; the general case needs ZK + timelock and is out of scope (§1.2, §9). |
+
 ---
 
 ## 2. Cryptographic Primitives
@@ -222,6 +236,16 @@ The `version` field is included in all messages and is covered by all signatures
 
 Any change to the on-wire schema (adding or removing required fields) or to the randomness derivation formula constitutes a **breaking protocol change**. Implementations that introduce such changes MUST increment the `PROTOCOL_VERSION` constant (in `trap-core/src/lib.rs`) and update the `version` field emitted in all messages accordingly. Old and new peers sharing the same version string will interpret messages differently and MUST NOT be allowed to interoperate.
 
+### 5.7 Canonical Encoding (and its limits)
+
+Commitments and signatures are computed over a canonical byte form, never over raw wire bytes. Both parties and any verifier MUST derive those bytes the same way or a legitimate session will appear to mismatch. The reference implementation pins this as follows:
+
+- **Bytes come from the typed model, not the received JSON.** A message is deserialized into its struct, and the canonical bytes are re-serialized from that struct. Consequently, **unknown wire fields cannot affect verification** — they are dropped on deserialization and never enter a signed payload. (Applications should be aware of the converse: a UI that renders the *raw* received JSON could display an unknown field the verifier ignored. Display what the verifier computed over, not arbitrary wire content.)
+- **Maps preserve insertion order.** Outcome tables use an insertion-ordered map (`IndexMap`), so serialization order is stable and round-trips deterministically. A plain hash map would not be canonical across processes.
+- **Compact JSON, integer weights/bounds only.** `Contents` and `Outcome` are serialized as compact `serde_json`; commitment-relevant numeric fields are integers. Floats are not used in committed values.
+
+This is sufficient for the reference implementation and its tests, but it is **not** a fully-specified cross-implementation canonicalization standard. A second, independent implementation interoperating on the wire would need a rigorously pinned encoding (exact number formatting, string/UTF-8 normalization, unknown-field policy, dependency ordering). Defining that is **out of scope** for this reference demonstration; it is called out here so the gap is explicit rather than assumed away.
+
 ---
 
 ## 6. Randomness Derivation
@@ -294,7 +318,7 @@ A proof document is resolvable in this way only once the live Step 2 reveal has 
 
 ## 8. Application Layer
 
-The TRAP protocol produces an agreed-upon random value (or set of derived values). How that value maps to meaningful outcomes is an application-layer concern. This section describes a reference approach for structured outcome selection, but applications are free to implement their own mapping.
+The TRAP protocol produces an agreed-upon random value (or set of derived values). How that value maps to meaningful outcomes is an application-layer concern. This section describes a reference approach for structured outcome selection, but applications are free to implement their own mapping. **§8.3 states a normative settlement boundary every application MUST observe.**
 
 ### 8.1 Contents Format (Reference)
 
@@ -341,7 +365,8 @@ Applications that use TRAP for item selection (e.g., loot boxes, raffles, resour
 **Supported operation types:**
 - `distribution` — Weighted random selection from a set of outcomes. Weights are integers; the outcome is selected by `uint256(derived_value) % total_weight` mapped against cumulative weights.
 - `range` — Random integer within a range (inclusive). Computed as `min + (uint256(derived_value) % (max - min + 1))`.
-- `float` — Random decimal within a range.
+
+The reference implementation's committed numerics are **integer-only** (weights and range bounds), consistent with the canonical-encoding rules in §5.7. A decimal/`float` operation is intentionally **not** part of the reference: representing decimals in committed values would require a pinned fixed-point encoding to keep commitments canonical across independent implementations. Applications needing decimals should derive them at the application layer from an integer `range` (e.g. scale by 100 for two decimal places).
 
 **Dependencies** allow operations to reference the result of a previous operation, enabling cascaded selections (e.g., select a tier, then select an item within that tier). Maximum dependency depth is 6 levels.
 
@@ -360,6 +385,10 @@ The contents are committed (hashed) at Step 0 and revealed at Step 2. Any verifi
 
 This makes outcomes fully and independently verifiable from the proof document alone.
 
+### 8.3 Settlement Boundary
+
+The protocol-level claim that a session ghosted *before* the live Step 2 reveal "voids cleanly" (§3.2) is a statement about the cryptography: no outcome-determining information was disclosed and no party gained an advantage. It is **not** a statement about money or inventory. An application **MUST NOT** treat any user value (payment, spent currency, consumed entitlement) as settled until Step 2 has succeeded — or it **MUST** define automatic refund/cancellation semantics for pre-Step-2 aborts. TRAP provides the fair-randomness and evidence layer; settlement finality is the application's responsibility.
+
 ---
 
 ## 9. Limitations & Future Work
@@ -372,7 +401,7 @@ TRAP requires a natural power asymmetry between participants. In symmetric peer-
 
 The general two-party randomness agreement problem (without asymmetry) requires proving that a committed value is *valid* without revealing it. This would prevent ghosting from being useful — if you've proven your commitment is legitimate, walking away doesn't let you change it.
 
-This requires **zero-knowledge proofs** compatible with **timelock encryption curves**. Specifically, ZK-SNARKs on BLS12-377 curves (which are SNARK-friendly) combined with timelock encryption would provide a complete solution. However:
+This requires **zero-knowledge proofs** compatible with **timelock encryption curves**. Specifically, ZK-SNARKs on BLS12-377 curves (which are SNARK-friendly) combined with timelock encryption would address the cryptographic core — proving a committed value is valid and making post-commitment ghosting useless. It would *not*, by itself, solve enforcement, early aborts, or economic penalties; those remain application-layer concerns (§8.3). So it is a necessary ingredient for symmetric P2P fairness, not a complete solution on its own. However:
 
 - drand's Quicknet uses BLS12-381 (not SNARK-friendly).
 - No production timelock beacon exists on BLS12-377.

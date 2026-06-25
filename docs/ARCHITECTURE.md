@@ -306,52 +306,77 @@ impl ServerSession {
 pub struct ClientSession { ... }
 
 impl ClientSession {
-    /// Step 0→1: Receive server commitment, produce client commitment.
-    /// Generates client secret, computes commitment, encrypts under timelock.
+    /// Step 0→1: verify the server commitment and produce the client
+    /// commitment. The server-chosen drand round is validated against
+    /// `round_check` (Spec §7.1); a session naming an elapsed or out-of-policy
+    /// round is rejected before the client commits.
     pub fn accept(
         identity: &Identity,
         msg: ServerCommitment,
-        chain_info: &ChainInfo,
+        beacon_public_key: &[u8],
+        round_check: &RoundCheck,
     ) -> Result<(Self, ClientCommitment), ProtocolError>;
 
-    /// Step 2→3: Receive contents reveal, verify against commitment,
-    /// produce client reveal.
+    /// Same, but WITHOUT the round-freshness check. Reserved for fixed-round
+    /// test/replay flows; named loudly because skipping the check in
+    /// production re-opens the stall-then-decrypt window.
+    pub fn accept_unchecked(
+        identity: &Identity,
+        msg: ServerCommitment,
+        beacon_public_key: &[u8],
+    ) -> Result<(Self, ClientCommitment), ProtocolError>;
+
+    /// Step 2→3: verify the contents + nonce reveal, produce the client reveal.
     pub fn receive_contents(
         self,
+        identity: &Identity,
         msg: ContentsReveal,
-    ) -> Result<(Self, ClientReveal), ProtocolError>;
+    ) -> Result<(Self, ClientReveal), ProtocolFailure>;
 
-    /// Step 4: Receive server reveal, verify and compute outcome.
+    /// Step 4: verify the server reveal and independently compute the outcome.
     pub fn receive_server_reveal(
         self,
         msg: ServerReveal,
-    ) -> Result<(Self, Outcome), ProtocolError>;
+    ) -> Result<(Self, Outcome), ProtocolFailure>;
 
-    /// Unhappy path: Resolve after timelock expiry when server ghosted.
+    /// Unhappy path: after the live reveal, resolve from the server's
+    /// timelock-escrowed secret once the round's beacon is available.
     pub fn resolve_with_beacon(
         self,
         beacon: &BeaconValue,
-    ) -> Result<(Self, Outcome), ProtocolError>;
+    ) -> Result<(Self, Outcome), ProtocolFailure>;
 
-    /// Export the proof document at current state.
-    pub fn proof(&self) -> ProofDocument;
+    /// The proof document at the current state.
+    pub fn proof(&self) -> &ProofDocument;
 }
 ```
+
+On failure, the consuming transitions return `ProtocolFailure`, which carries the proof document accumulated so far — evidence is preserved.
 
 **State machine transitions consume `self` by value.** This ensures at the type level that a session cannot be advanced twice from the same state. Each method returns a new `Self` representing the next state.
 
 **`verify.rs`:**
 ```rust
-/// Standalone proof verification — no session state needed.
-/// Verifies all signatures, commitment-reveal consistency,
-/// and outcome computation from a proof document.
-pub fn verify_proof(proof: &ProofDocument) -> Result<VerifyResult, VerifyError>;
+/// Standalone proof verification — no session state needed. Verifies the
+/// signature chain, commitment-reveal consistency, and (when determinable)
+/// the outcome. Supply `beacon` to resolve timelock paths for abandoned
+/// sessions; supply `expected_server_key` to authenticate the origin against
+/// a known server key (`None` checks self-consistency only).
+pub fn verify_proof(
+    proof: &ProofDocument,
+    beacon: Option<&BeaconValue>,
+    expected_server_key: Option<&[u8; 32]>,
+) -> Result<VerifyResult, ProtocolError>;
 
 pub struct VerifyResult {
-    pub outcome: Outcome,
-    pub all_signatures_valid: bool,
-    pub all_commitments_match: bool,
-    pub outcome_correctly_computed: bool,
+    pub progress: SessionProgress,
+    pub signatures_valid: bool,
+    pub commitments_match: bool,
+    pub outcome: Option<Outcome>,
+    pub outcome_verified: bool,
+    /// True only when `expected_server_key` was supplied and matched the
+    /// Step 0 signer — i.e. a specific server is provably accountable.
+    pub server_authenticated: bool,
 }
 ```
 
