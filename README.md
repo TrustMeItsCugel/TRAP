@@ -171,14 +171,16 @@ against a freshly fetched value.
 use trap_core::protocol::verify::verify_proof;
 
 let proof: ProofDocument = serde_json::from_str(&json)?;
-// Completed sessions verify standalone:
-let result = verify_proof(&proof, None)?;
-// Abandoned sessions verify with the (public) beacon for the target round:
-let result = verify_proof(&proof, Some(&beacon))?;
+// Pin the known server key to authenticate origin (not just self-consistency).
+// Pass None to check consistency only — then `server_authenticated` is false.
+let result = verify_proof(&proof, None, Some(&server_key))?;
+assert!(result.server_authenticated);
+// Abandoned sessions also need the (public) beacon for the target round:
+let result = verify_proof(&proof, Some(&beacon), Some(&server_key))?;
 assert!(result.signatures_valid && result.commitments_match && result.outcome_verified);
 ```
 
 ## Status
 
-Reference implementation, v0.1.0. MIT licensed. No long-term support
-intended — the point is to show the construction works.
+Reference implementation, protocol v0.2.0. MIT licensed. No long-term
+support intended — the point is to show the construction works.
