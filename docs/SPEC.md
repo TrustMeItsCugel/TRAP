@@ -318,9 +318,7 @@ A proof document is resolvable in this way only once the live Step 2 reveal has 
 
 ## 8. Application Layer
 
-The TRAP protocol produces an agreed-upon random value (or set of derived values). How that value maps to meaningful outcomes is an application-layer concern. This section describes a reference approach for structured outcome selection, but applications are free to implement their own mapping.
-
-> **Settlement boundary.** The protocol-level claim that a session ghosted *before* the live Step 2 reveal "voids cleanly" (§3.2) is a statement about the cryptography: no outcome-determining information was disclosed and no party gained an advantage. It is **not** a statement about money or inventory. An application **MUST NOT** treat any user value (payment, spent currency, consumed entitlement) as settled until Step 2 has succeeded — or it **MUST** define automatic refund/cancellation semantics for pre-Step-2 aborts. TRAP provides the fair-randomness and evidence layer; settlement finality is the application's responsibility.
+The TRAP protocol produces an agreed-upon random value (or set of derived values). How that value maps to meaningful outcomes is an application-layer concern. This section describes a reference approach for structured outcome selection, but applications are free to implement their own mapping. **§8.3 states a normative settlement boundary every application MUST observe.**
 
 ### 8.1 Contents Format (Reference)
 
@@ -367,7 +365,8 @@ Applications that use TRAP for item selection (e.g., loot boxes, raffles, resour
 **Supported operation types:**
 - `distribution` — Weighted random selection from a set of outcomes. Weights are integers; the outcome is selected by `uint256(derived_value) % total_weight` mapped against cumulative weights.
 - `range` — Random integer within a range (inclusive). Computed as `min + (uint256(derived_value) % (max - min + 1))`.
-- `float` — Random decimal within a range.
+
+The reference implementation's committed numerics are **integer-only** (weights and range bounds), consistent with the canonical-encoding rules in §5.7. A decimal/`float` operation is intentionally **not** part of the reference: representing decimals in committed values would require a pinned fixed-point encoding to keep commitments canonical across independent implementations. Applications needing decimals should derive them at the application layer from an integer `range` (e.g. scale by 100 for two decimal places).
 
 **Dependencies** allow operations to reference the result of a previous operation, enabling cascaded selections (e.g., select a tier, then select an item within that tier). Maximum dependency depth is 6 levels.
 
@@ -385,6 +384,10 @@ The contents are committed (hashed) at Step 0 and revealed at Step 2. Any verifi
 3. Confirm the outcome matches the claimed result.
 
 This makes outcomes fully and independently verifiable from the proof document alone.
+
+### 8.3 Settlement Boundary
+
+The protocol-level claim that a session ghosted *before* the live Step 2 reveal "voids cleanly" (§3.2) is a statement about the cryptography: no outcome-determining information was disclosed and no party gained an advantage. It is **not** a statement about money or inventory. An application **MUST NOT** treat any user value (payment, spent currency, consumed entitlement) as settled until Step 2 has succeeded — or it **MUST** define automatic refund/cancellation semantics for pre-Step-2 aborts. TRAP provides the fair-randomness and evidence layer; settlement finality is the application's responsibility.
 
 ---
 
