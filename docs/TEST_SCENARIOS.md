@@ -1,6 +1,6 @@
 # TRAP: Test Scenarios
 
-**Version:** 0.1.0-draft
+**Version:** 0.2.0-draft
 **Companion to:** TRAP Protocol Specification & Architecture Document
 
 ---
@@ -125,11 +125,6 @@ Given a 32-byte plaintext, a round number, and the drand public key
 When `encrypt_secret()` is called
 Then it returns a non-empty ciphertext that differs from the plaintext.
 
-**T1b — Encrypt server payload produces non-empty ciphertext:**
-Given a `ServerTimelockPayload` containing a secret and contents, a round number, and the drand public key
-When `encrypt_server_payload()` is called
-Then it returns a non-empty ciphertext.
-
 **T2 — Encrypt is non-deterministic:**
 Given the same plaintext and round
 When `encrypt_secret()` is called twice
@@ -140,12 +135,6 @@ Given ciphertext encrypted to round N via `encrypt_secret()`
 And the real beacon value for round N
 When `decrypt_secret(ciphertext, beacon)` is called
 Then it returns the original plaintext.
-
-**T3b — Decrypt recovers server payload with correct beacon:**
-Given ciphertext encrypted to round N via `encrypt_server_payload()`
-And the real beacon value for round N
-When `decrypt_server_payload(ciphertext, beacon)` is called
-Then it returns the original secret and contents.
 
 **T4 — Decrypt fails with wrong beacon:**
 Given ciphertext encrypted to round N
@@ -279,44 +268,39 @@ Then the computed outcome is identical to the happy-path outcome.
 
 ### 5.2 Server Ghosts After Step 1
 
-**U3 — [INTEGRATION] Client resolves via timelock (server ghosts before contents reveal):**
+**U3 — [INTEGRATION] Session voids cleanly (server ghosts before the live reveal):**
 Given a protocol that has completed Steps 0 and 1
 And the server does not send Step 2 (contents reveal)
-When the client resolves with the beacon value for the target round:
-  1. Client decrypts server's timelock-encrypted bundle
-  2. Client extracts the server secret and the contents from the bundle
-  3. Client verifies `SHA256(secret)` matches `server_commitment` from Step 0
-  4. Client verifies `SHA256(contents || session_id)` matches `contents_commitment` from Step 0
-  5. Client computes outcome using both secrets and the contents
+When the client attempts to resolve with the beacon value for the target round:
+  1. The proof document contains no contents reveal, so the contents and nonce are unknown
+  2. The server's escrow holds only its secret — insufficient to compute an outcome
 Then:
-  - The outcome matches what the happy path would have produced.
-  - The proof document is fully self-resolving without server cooperation.
+  - Resolution fails with an `InvalidState` error (expected `ContentsRevealed`).
+  - The session voids harmlessly: nothing outcome-determining was disclosed and the server never learned the client secret, so it gained no advantage.
+  - This is the deliberate trade-off that removes the stall-then-grind incentive.
 
 ### 5.3 Server Ghosts After Step 2
 
-**U4 — [INTEGRATION] Client resolves after receiving contents:**
+**U4 — [INTEGRATION] Client resolves after the live reveal:**
 Given a protocol that has completed Steps 0, 1, and 2
 And the server does not send Step 4 (server reveal)
 When the client resolves with the beacon value:
-  1. Client decrypts server's timelock-encrypted bundle
-  2. Client extracts the server secret (contents already received at Step 2)
-  3. Client verifies decrypted secret matches server's commitment
-  4. Client computes outcome using both secrets and the revealed contents
+  1. Client decrypts the server secret from its timelock escrow
+  2. Client verifies decrypted secret matches `server_commitment` from Step 0
+  3. Client computes outcome from both secrets, the revealed nonce, and the contents (both from Step 2)
 Then:
   - The outcome matches what the happy path would have produced.
-  - The contents from the bundle match the contents revealed at Step 2 (additional consistency check).
 
 ### 5.4 Junk Timelock Encryption
 
-**U5 — [INTEGRATION] Server encrypted junk bundle — detected on resolution:**
-Given a server that encrypts random garbage (not the real secret and contents) under timelock
-And the protocol proceeds through Steps 0 and 1
-When the client resolves via timelock:
-  1. Client decrypts the server's timelock ciphertext
-  2. Client attempts to parse the decrypted payload as a `{secret, contents}` bundle
-  3. If parsing succeeds, client verifies `SHA256(secret)` against `server_commitment` and `SHA256(contents || session_id)` against `contents_commitment`
+**U5 — [INTEGRATION] Server escrowed a junk secret — detected on resolution:**
+Given a server that escrows a secret under timelock that differs from its commitment
+And the protocol proceeds through Steps 0, 1, and the live Step 2 reveal
+When the client resolves a post-reveal server ghost via timelock:
+  1. Client decrypts the server's timelock ciphertext to a 32-byte secret
+  2. Client verifies `SHA256(secret)` against `server_commitment`
 Then:
-  - Either parsing fails or commitment verification fails.
+  - Commitment verification fails (the escrow was junk).
   - This constitutes cryptographic proof of server misbehaviour.
   - The proof document records the mismatch.
 

@@ -17,4 +17,8 @@ pub mod outcome;
 pub mod protocol;
 pub mod types;
 
-pub const PROTOCOL_VERSION: &str = "0.1.0";
+// Bumped 0.1.0 -> 0.2.0: the live-nonce change is a breaking on-wire change
+// (new required `server_nonce_commitment`/`server_nonce` fields and a new
+// `combined_randomness` formula). Per SPEC §5.6, such changes MUST increment
+// this constant so 0.1.0 and 0.2.0 peers do not attempt to interoperate.
+pub const PROTOCOL_VERSION: &str = "0.2.0";

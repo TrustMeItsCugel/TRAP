@@ -53,11 +53,12 @@ holding (`ghost-server.proof.json`, hex elided):
 ```jsonc
 {
   "server_commitment": {                          // Step 0 — signed by the server
-    "version": "0.1.0",
+    "version": "0.2.0",
     "session_id": "demo-ghost-server",
     "server_commitment":   "c41b…9a07",           // SHA256(server_secret)
     "contents_commitment": "5f2e…d8b3",           // SHA256(canonical_json(contents) || session_id)
-    "server_timelock_encrypted": "a91c…44e0",     // tlock{server_secret, contents} → round 1000
+    "server_nonce_commitment": "7b10…ee52",       // SHA256(server_nonce) — revealed live at Step 2
+    "server_timelock_encrypted": "a91c…44e0",     // tlock{server_secret} → round 1000
     "drand_round": 1000,
     "signature": { "algorithm": "Ed25519", "signer": "37dd…", "signed_fields": ["…"], "signature": "…" }
   },
@@ -66,18 +67,28 @@ holding (`ghost-server.proof.json`, hex elided):
     "client_timelock_encrypted": "f33b…0c9d",     // tlock{client_secret} → round 1000
     "signature": { "…": "chains over the server's signature" }
   },
+  "contents_reveal": {                            // Step 2 — the live reveal, signed by the server
+    "contents": { "operations": ["…"] },          // the odds, now in the clear
+    "server_nonce": "9d4c…1a7f",                  // preimage of server_nonce_commitment
+    "signature": { "…": "chains over Steps 0–1" }
+  },
   "resolution": "timelock_server_payload"
 }
 ```
 
-No contents, no secrets, no outcome — and that's the point. A verifier
-takes the public drand beacon for round 1000, decrypts both timelock
-payloads, checks them against the signed commitments, and recomputes the
-result: `{"tier": "epic", "item": "dragonfang", "quality": 73}`. The 5%
-drop, delivered by a dead server. The proof can't misstate the odds or
-the outcome because it contains neither; both are consequences of
-commitments signed by the party they would accuse. And a payload that
-decrypts to junk is itself the verdict — fraud, signed by its author.
+The odds are in the clear (disclosed at the live Step 2), but no secrets
+and no stated outcome are — and that's the point. A verifier takes the
+public drand beacon for round 1000, decrypts the server's escrowed secret
+and the client's, checks them against the signed commitments, folds in the
+revealed nonce, and recomputes the result:
+`{"tier": "epic", "item": "dragonfang", "quality": 73}`. The 5% drop,
+delivered by a server that vanished right after disclosing the odds. The
+proof can't misstate the outcome because it doesn't contain one — the
+outcome is a consequence of commitments signed by the party they would
+accuse. And a payload that decrypts to junk is itself the verdict — fraud,
+signed by its author. (Had the server vanished *before* the live reveal,
+there would simply be no session to resolve, and nothing was ever at
+stake.)
 
 `cargo run -p trap-demo` reproduces this proof, plus the cooperative and
 client-ghosting variants, fully offline.
@@ -91,10 +102,16 @@ round chosen at session start. Going silent only delays the outcome.
 - **Cheating is binary and provable.** A commitment either matches its
 reveal or it doesn't. A timelock payload that decrypts to junk is
 cryptographic proof of fraud, signed by the party that produced it.
-- **Self-resolving proofs.** The server's timelock bundle contains both
-its secret *and* the contents, so a proof document resolves unilaterally
-after expiry even if the server vanished before revealing anything. The
-server needs no storage for abandoned sessions.
+- **Stall-proof.** The server escrows only its secret; the odds and a live
+nonce are disclosed at Step 2, reachable only *after* the client commits.
+A client that stalls to decrypt the escrow early learns a secret it can't
+map to an outcome — so grinding a favourable result is structurally
+impossible, even when the odds are public.
+- **Self-resolving after the live reveal.** Once the odds are disclosed
+(Step 2), the server's secret is recoverable from timelock, so the proof
+resolves unilaterally even if the server then vanishes. A server that
+quits *before* the reveal simply voids the session — harmless, since no
+odds were ever disclosed and no outcome determined.
 - **High throughput, fully off-chain.** Chain info is fetched once at
 startup; round numbers are computed locally. The happy path touches no
 third party. The beacon is contacted only to resolve an abandoned

@@ -233,17 +233,20 @@ fn main() {
     show_verify(server.proof(), Some(&beacon));
     write_proof("ghost-client", server.proof());
 
-    // ---------- Scenario 3: server ghosts; client self-resolves ----------
-    println!("\n[3] Server ghosts after Step 0; client self-resolves from the bundle");
-    let (_server, step0) = ServerSession::initiate(
+    // ---------- Scenario 3: server ghosts after the live reveal ----------
+    println!("\n[3] Server reveals contents+nonce, then ghosts; client resolves via timelock");
+    let (server, step0) = ServerSession::initiate(
         &server_id,
         sample_contents(),
         config("demo-ghost-server", env.round),
         pk,
     )
     .unwrap();
-    let (client, _step1) = ClientSession::accept(&client_id, step0, pk).unwrap();
-    println!("  (server never reveals contents — the bundle is self-resolving)");
+    let (client, step1) = ClientSession::accept(&client_id, step0, pk).unwrap();
+    // Live Step 2: the server discloses contents and nonce...
+    let (_server, step2) = server.receive_client_commitment(&server_id, step1).unwrap();
+    let (client, _step3) = client.receive_contents(&client_id, step2).unwrap();
+    println!("  (server never sends Step 4 — client resolves the server's escrowed secret)");
     let beacon = (env.beacon_fetch)();
     let (client, outcome) = client.resolve_with_beacon(&beacon).unwrap();
     println!("  outcome: {}", serde_json::to_string(&outcome).unwrap());

@@ -44,7 +44,13 @@ pub struct ServerCommitment {
     /// SHA256(canonical_json(contents) || session_id)
     #[serde(with = "super::hex32")]
     pub contents_commitment: [u8; 32],
-    /// Timelock ciphertext of the bundle {server_secret, contents}.
+    /// SHA256(server_nonce). The nonce is revealed live at Step 2 and is
+    /// NOT escrowed under timelock (Spec §6.1) — this is what blocks the
+    /// stall-then-grind attack for public-odds contents.
+    #[serde(with = "super::hex32")]
+    pub server_nonce_commitment: [u8; 32],
+    /// Timelock ciphertext of the server secret (32 bytes). Contents and
+    /// the server nonce are deliberately excluded; they are revealed live.
     #[serde(with = "super::hexvec")]
     pub server_timelock_encrypted: Vec<u8>,
     pub drand_round: u64,
@@ -65,10 +71,15 @@ pub struct ClientCommitment {
     pub signature: FieldSignature,
 }
 
-/// Step 2: the server reveals the contents.
+/// Step 2: the server reveals the contents and the live nonce. This is the
+/// protocol's only genuinely-live step: both values are committed at Step 0
+/// but disclosed here, after the client has irrevocably committed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContentsReveal {
     pub contents: Contents,
+    /// The nonce committed (as a hash) at Step 0, now revealed.
+    #[serde(with = "super::hex32")]
+    pub server_nonce: [u8; 32],
     pub signature: FieldSignature,
 }
 
@@ -85,7 +96,7 @@ pub struct ClientReveal {
 pub struct ServerReveal {
     #[serde(with = "super::hex32")]
     pub server_secret: [u8; 32],
-    /// SHA256(client_secret || server_secret)
+    /// SHA256(client_secret || server_secret || server_nonce)
     #[serde(with = "super::hex32")]
     pub combined_randomness: [u8; 32],
     pub outcome: Outcome,
@@ -142,6 +153,7 @@ mod tests {
             session_id: "s-1".into(),
             server_commitment: [1u8; 32],
             contents_commitment: [2u8; 32],
+            server_nonce_commitment: [9u8; 32],
             server_timelock_encrypted: vec![3, 4, 5],
             drand_round: 1000,
             metadata: None,

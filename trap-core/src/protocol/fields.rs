@@ -31,11 +31,13 @@ impl FieldBuf {
 }
 
 /// Step 0 fields: everything in the server commitment except the signature.
+#[allow(clippy::too_many_arguments)]
 pub fn server_commitment_fields(
     version: &str,
     session_id: &str,
     server_commitment: &[u8; 32],
     contents_commitment: &[u8; 32],
+    server_nonce_commitment: &[u8; 32],
     server_timelock_encrypted: &[u8],
     drand_round: u64,
     metadata: Option<&serde_json::Value>,
@@ -45,6 +47,7 @@ pub fn server_commitment_fields(
         ("session_id", session_id.as_bytes().to_vec()),
         ("server_commitment", server_commitment.to_vec()),
         ("contents_commitment", contents_commitment.to_vec()),
+        ("server_nonce_commitment", server_nonce_commitment.to_vec()),
         (
             "server_timelock_encrypted",
             server_timelock_encrypted.to_vec(),
@@ -66,6 +69,7 @@ pub fn server_commitment_fields_of(msg: &ServerCommitment) -> FieldBuf {
         &msg.session_id,
         &msg.server_commitment,
         &msg.contents_commitment,
+        &msg.server_nonce_commitment,
         &msg.server_timelock_encrypted,
         msg.drand_round,
         msg.metadata.as_ref(),
@@ -92,15 +96,21 @@ pub fn client_commitment_fields_of(msg: &ClientCommitment) -> FieldBuf {
     client_commitment_fields(&msg.client_commitment, &msg.client_timelock_encrypted)
 }
 
-/// Step 2 fields.
-pub fn contents_reveal_fields(contents: &crate::types::contents::Contents) -> FieldBuf {
+/// Step 2 fields: the revealed contents and the live nonce.
+pub fn contents_reveal_fields(
+    contents: &crate::types::contents::Contents,
+    server_nonce: &[u8; 32],
+) -> FieldBuf {
     FieldBuf {
-        pairs: vec![("contents", canonical_contents_bytes(contents))],
+        pairs: vec![
+            ("contents", canonical_contents_bytes(contents)),
+            ("server_nonce", server_nonce.to_vec()),
+        ],
     }
 }
 
 pub fn contents_reveal_fields_of(msg: &ContentsReveal) -> FieldBuf {
-    contents_reveal_fields(&msg.contents)
+    contents_reveal_fields(&msg.contents, &msg.server_nonce)
 }
 
 /// Step 3 fields.
