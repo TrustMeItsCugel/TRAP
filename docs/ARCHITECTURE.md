@@ -112,9 +112,10 @@ pub struct ClientCommitment {
     pub signature: FieldSignature,
 }
 
-/// Step 2: Server reveals contents
+/// Step 2: Server reveals contents and nonce
 pub struct ContentsReveal {
     pub contents: Contents,
+    pub server_nonce: [u8; 32],          // committed at Step 0, revealed here
     pub signature: FieldSignature,
 }
 
@@ -188,7 +189,7 @@ Pure functions. No state, no I/O. Each sub-module has a focused responsibility.
 ```rust
 pub fn commit(secret: &[u8; 32]) -> [u8; 32];
 pub fn commit_contents(contents: &Contents, session_id: &str) -> [u8; 32];
-pub fn combine_secrets(client_secret: &[u8; 32], server_secret: &[u8; 32]) -> [u8; 32];
+pub fn combine_secrets(client_secret: &[u8; 32], server_secret: &[u8; 32], server_nonce: &[u8; 32]) -> [u8; 32];
 pub fn derive_operation_random(combined: &[u8; 32], operation_id: &str) -> [u8; 32];
 pub fn verify_commitment(secret: &[u8; 32], commitment: &[u8; 32]) -> bool;
 ```
@@ -210,33 +211,16 @@ pub fn verify_field_signature(
 
 **`timelock.rs`:**
 ```rust
-/// Server timelock payload — contains both secret and contents
-pub struct ServerTimelockPayload {
-    pub secret: [u8; 32],
-    pub contents: Contents,
-}
-
 pub fn encrypt_secret(
-    plaintext: &[u8; 32],
+    secret: &[u8; 32],
     round: u64,
-    public_key: &[u8],
-) -> Result<Vec<u8>, TimelockError>;
-
-pub fn encrypt_server_payload(
-    payload: &ServerTimelockPayload,
-    round: u64,
-    public_key: &[u8],
-) -> Result<Vec<u8>, TimelockError>;
+    beacon_public_key: &[u8],
+) -> Result<Vec<u8>, CryptoError>;
 
 pub fn decrypt_secret(
     ciphertext: &[u8],
-    beacon_value: &[u8],
-) -> Result<[u8; 32], TimelockError>;
-
-pub fn decrypt_server_payload(
-    ciphertext: &[u8],
-    beacon_value: &[u8],
-) -> Result<ServerTimelockPayload, TimelockError>;
+    beacon_signature: &[u8],
+) -> Result<[u8; 32], CryptoError>;
 ```
 
 ### 3.3 `beacon` — drand Network Interaction
@@ -418,10 +402,11 @@ Each module defines its own error type. The protocol module unifies them.
 ```rust
 // crypto/mod.rs
 pub enum CryptoError {
-    HashMismatch,
     InvalidSignature,
-    TimelockEncryptFailed(String),
-    TimelockDecryptFailed(String),
+    InvalidPublicKey,
+    TimelockEncrypt(String),
+    TimelockDecrypt(String),
+    TimelockPayload(String),
 }
 
 // beacon/mod.rs
